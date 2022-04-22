@@ -205,6 +205,10 @@ zed_notify()
     [ "${rv}" -eq 0 ] && num_success=$((num_success + 1))
     [ "${rv}" -eq 1 ] && num_failure=$((num_failure + 1))
 
+    zed_notify_gotify "${subject}" "${pathname}"; rv=$?
+    [ "${rv}" -eq 0 ] && num_success=$((num_success + 1))
+    [ "${rv}" -eq 1 ] && num_failure=$((num_failure + 1))
+
     [ "${num_success}" -gt 0 ] && return 0
     [ "${num_failure}" -gt 0 ] && return 1
     return 2
@@ -508,6 +512,81 @@ zed_notify_pushover()
         | sed -n -e 's/.*"errors" *:.*\[\(.*\)\].*/\1/p')"
     if [ -n "${msg_err}" ]; then
         zed_log_err "pushover \"${msg_err}"\"
+        return 1
+    fi
+    return 0
+}
+
+
+# zed_notify_gotify (subject, pathname)
+#
+# Send a push notification using Gotify <https://gotify.net/>.
+# The app token (ZED_GOTIFY_APP_TOKEN) identifies this client to the
+# Gotify server specified via the Gotify instance URL (ZED_GOTIFY_URL).
+#
+# Requires curl and sed executables to be installed in the standard PATH.
+#
+# References
+#   https://gotify.net/docs/
+#
+# Arguments
+#   subject: notification subject
+#   pathname: pathname containing the notification message (OPTIONAL)
+#
+# Globals
+#   ZED_GOTIFY_APP_TOKEN
+#   ZED_GOTIFY_URL
+#
+# Return
+#   0: notification sent
+#   1: notification failed
+#   2: not configured
+#
+zed_notify_gotify()
+{
+    local subject="$1"
+    local pathname="${2:-"/dev/null"}"
+    local msg_body
+    local msg_out
+    local msg_err
+    local url="${ZED_GOTIFY_URL}/message?token=${ZED_GOTIFY_APP_TOKEN}"
+
+    [ -n "${ZED_GOTIFY_APP_TOKEN}" ] && [ -n "${ZED_GOTIFY_URL}" ] || return 2
+
+    if [ ! -r "${pathname}" ]; then
+        zed_log_err "gotify cannot read \"${pathname}\""
+        return 1
+    fi
+
+    zed_check_cmd "curl" "sed" || return 1
+
+    # Read the message body in.
+    #
+    msg_body="$(cat "${pathname}")"
+
+    if [ -z "${msg_body}" ]
+    then
+        msg_body=$subject
+        subject=""
+    fi
+
+    # Send the POST request and check for errors.
+    #
+    msg_out="$( \
+        curl \
+        --form-string "title=${subject}" \
+        --form-string "message=${msg_body}" \
+        "${url}" \
+        2>/dev/null \
+        )"; rv=$?
+    if [ "${rv}" -ne 0 ]; then
+        zed_log_err "curl exit=${rv}"
+        return 1
+    fi
+    msg_err="$(echo "${msg_out}" \
+        | sed -n -e 's/.*"errors" *:.*\[\(.*\)\].*/\1/p')"
+    if [ -n "${msg_err}" ]; then
+        zed_log_err "gotify \"${msg_err}"\"
         return 1
     fi
     return 0

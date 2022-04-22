@@ -99,6 +99,23 @@ ZED_EMAIL_ADDR="root"
 #ZED_PUSHOVER_USER=""
 
 ##
+# Gotify app token.
+# This defines which app in Gotify will receive notifications.
+#   <https://gotify.net/>
+# Disabled by default; uncomment to enable.
+#
+#ZED_GOTIFY_APP_TOKEN=""
+
+##
+# Gotify instance URL.
+# This allows pushing notifications.
+#   <https://gotify.net/>
+# Disabled by default; uncomment to enable.
+# ZED_GOTIFY_APP_TOKEN, above, must also be configured.
+#
+#ZED_GOTIFY_URL=""
+
+##
 # Default directory for zed state files.
 #
 #ZED_RUNDIR="/var/run"
