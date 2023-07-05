@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -52,6 +52,15 @@
 #include <sys/zthr.h>
 #include "zfs_namecheck.h"
 #include "zfs_prop.h"
+
+/*
+ * This controls if we verify the ZVOL quota or not.
+ * Currently, quotas are not implemented for ZVOLs.
+ * The quota size is the size of the ZVOL.
+ * The size of the volume already implies the ZVOL size quota.
+ * The quota mechanism can introduce a significant performance drop.
+ */
+static int zvol_enforce_quotas = B_TRUE;
 
 /*
  * Filesystem and Snapshot Limits
@@ -160,7 +169,7 @@ dsl_dir_evict_async(void *dbu)
 
 int
 dsl_dir_hold_obj(dsl_pool_t *dp, uint64_t ddobj,
-    const char *tail, void *tag, dsl_dir_t **ddp)
+    const char *tail, const void *tag, dsl_dir_t **ddp)
 {
 	dmu_buf_t *dbuf;
 	dsl_dir_t *dd;
@@ -206,8 +215,6 @@ dsl_dir_hold_obj(dsl_pool_t *dp, uint64_t ddobj,
 				goto errout;
 			}
 		}
-
-		dsl_dir_snap_cmtime_update(dd);
 
 		if (dsl_dir_phys(dd)->dd_parent_obj) {
 			err = dsl_dir_hold_obj(dp,
@@ -270,6 +277,16 @@ dsl_dir_hold_obj(dsl_pool_t *dp, uint64_t ddobj,
 			}
 		}
 
+		if (dsl_dir_is_zapified(dd)) {
+			inode_timespec_t t = {0};
+			(void) zap_lookup(dp->dp_meta_objset, ddobj,
+			    DD_FIELD_SNAPSHOTS_CHANGED,
+			    sizeof (uint64_t),
+			    sizeof (inode_timespec_t) / sizeof (uint64_t),
+			    &t);
+			dd->dd_snap_cmtime = t;
+		}
+
 		dmu_buf_init_user(&dd->dd_dbu, NULL, dsl_dir_evict_async,
 		    &dd->dd_dbuf);
 		winner = dmu_buf_set_user_ie(dbuf, &dd->dd_dbu);
@@ -320,7 +337,7 @@ errout:
 }
 
 void
-dsl_dir_rele(dsl_dir_t *dd, void *tag)
+dsl_dir_rele(dsl_dir_t *dd, const void *tag)
 {
 	dprintf_dd(dd, "%s\n", "");
 	spa_close(dd->dd_pool->dp_spa, tag);
@@ -335,7 +352,7 @@ dsl_dir_rele(dsl_dir_t *dd, void *tag)
  * the spa.
  */
 void
-dsl_dir_async_rele(dsl_dir_t *dd, void *tag)
+dsl_dir_async_rele(dsl_dir_t *dd, const void *tag)
 {
 	dprintf_dd(dd, "%s\n", "");
 	spa_async_close(dd->dd_pool->dp_spa, tag);
@@ -420,8 +437,7 @@ getcomponent(const char *path, char *component, const char **nextp)
 	} else if (p[0] == '/') {
 		if (p - path >= ZFS_MAX_DATASET_NAME_LEN)
 			return (SET_ERROR(ENAMETOOLONG));
-		(void) strncpy(component, path, p - path);
-		component[p - path] = '\0';
+		(void) strlcpy(component, path, p - path + 1);
 		p++;
 	} else if (p[0] == '@') {
 		/*
@@ -432,8 +448,7 @@ getcomponent(const char *path, char *component, const char **nextp)
 			return (SET_ERROR(EINVAL));
 		if (p - path >= ZFS_MAX_DATASET_NAME_LEN)
 			return (SET_ERROR(ENAMETOOLONG));
-		(void) strncpy(component, path, p - path);
-		component[p - path] = '\0';
+		(void) strlcpy(component, path, p - path + 1);
 	} else {
 		panic("invalid p=%p", (void *)p);
 	}
@@ -449,7 +464,7 @@ getcomponent(const char *path, char *component, const char **nextp)
  * (*tail)[0] == '@' means that the last component is a snapshot.
  */
 int
-dsl_dir_hold(dsl_pool_t *dp, const char *name, void *tag,
+dsl_dir_hold(dsl_pool_t *dp, const char *name, const void *tag,
     dsl_dir_t **ddp, const char **tailp)
 {
 	char *buf;
@@ -801,7 +816,7 @@ dsl_fs_ss_limit_check(dsl_dir_t *dd, uint64_t delta, zfs_prop_t prop,
 {
 	objset_t *os = dd->dd_pool->dp_meta_objset;
 	uint64_t limit, count;
-	char *count_prop;
+	const char *count_prop;
 	enforce_res_t enforce;
 	int err = 0;
 
@@ -809,6 +824,18 @@ dsl_fs_ss_limit_check(dsl_dir_t *dd, uint64_t delta, zfs_prop_t prop,
 	ASSERT(prop == ZFS_PROP_FILESYSTEM_LIMIT ||
 	    prop == ZFS_PROP_SNAPSHOT_LIMIT);
 
+	if (prop == ZFS_PROP_SNAPSHOT_LIMIT) {
+		/*
+		 * We don't enforce the limit for temporary snapshots. This is
+		 * indicated by a NULL cred_t argument.
+		 */
+		if (cr == NULL)
+			return (0);
+
+		count_prop = DD_FIELD_SNAPSHOT_COUNT;
+	} else {
+		count_prop = DD_FIELD_FILESYSTEM_COUNT;
+	}
 	/*
 	 * If we're allowed to change the limit, don't enforce the limit
 	 * e.g. this can happen if a snapshot is taken by an administrative
@@ -827,19 +854,6 @@ dsl_fs_ss_limit_check(dsl_dir_t *dd, uint64_t delta, zfs_prop_t prop,
 	 */
 	if (delta == 0)
 		return (0);
-
-	if (prop == ZFS_PROP_SNAPSHOT_LIMIT) {
-		/*
-		 * We don't enforce the limit for temporary snapshots. This is
-		 * indicated by a NULL cred_t argument.
-		 */
-		if (cr == NULL)
-			return (0);
-
-		count_prop = DD_FIELD_SNAPSHOT_COUNT;
-	} else {
-		count_prop = DD_FIELD_FILESYSTEM_COUNT;
-	}
 
 	/*
 	 * If an ancestor has been provided, stop checking the limit once we
@@ -1172,10 +1186,9 @@ dsl_dir_space_towrite(dsl_dir_t *dd)
 
 	ASSERT(MUTEX_HELD(&dd->dd_lock));
 
-	for (int i = 0; i < TXG_SIZE; i++) {
+	for (int i = 0; i < TXG_SIZE; i++)
 		space += dd->dd_space_towrite[i & TXG_MASK];
-		ASSERT3U(dd->dd_space_towrite[i & TXG_MASK], >=, 0);
-	}
+
 	return (space);
 }
 
@@ -1262,6 +1275,7 @@ dsl_dir_tempreserve_impl(dsl_dir_t *dd, uint64_t asize, boolean_t netfree,
 	uint64_t quota;
 	struct tempreserve *tr;
 	int retval;
+	uint64_t ext_quota;
 	uint64_t ref_rsrv;
 
 top_of_function:
@@ -1305,7 +1319,9 @@ top_of_function:
 	 * If this transaction will result in a net free of space,
 	 * we want to let it through.
 	 */
-	if (ignorequota || netfree || dsl_dir_phys(dd)->dd_quota == 0)
+	if (ignorequota || netfree || dsl_dir_phys(dd)->dd_quota == 0 ||
+	    (tx->tx_objset && dmu_objset_type(tx->tx_objset) == DMU_OST_ZVOL &&
+	    zvol_enforce_quotas == B_FALSE))
 		quota = UINT64_MAX;
 	else
 		quota = dsl_dir_phys(dd)->dd_quota;
@@ -1337,7 +1353,16 @@ top_of_function:
 	 * on-disk is over quota and there are no pending changes
 	 * or deferred frees (which may free up space for us).
 	 */
-	if (used_on_disk + est_inflight >= quota) {
+	ext_quota = quota >> 5;
+	if (quota == UINT64_MAX)
+		ext_quota = 0;
+
+	if (used_on_disk >= quota) {
+		/* Quota exceeded */
+		mutex_exit(&dd->dd_lock);
+		DMU_TX_STAT_BUMP(dmu_tx_quota);
+		return (retval);
+	} else if (used_on_disk + est_inflight >= quota + ext_quota) {
 		if (est_inflight > 0 || used_on_disk < quota) {
 			retval = SET_ERROR(ERESTART);
 		} else {
@@ -1384,10 +1409,9 @@ top_of_function:
 		ignorequota = (dsl_dir_phys(dd)->dd_head_dataset_obj == 0);
 		first = B_FALSE;
 		goto top_of_function;
-
-	} else {
-		return (0);
 	}
+
+	return (0);
 }
 
 /*
@@ -1466,7 +1490,7 @@ dsl_dir_tempreserve_clear(void *tr_cookie, dmu_tx_t *tx)
 	if (tr_cookie == NULL)
 		return;
 
-	while ((tr = list_head(tr_list)) != NULL) {
+	while ((tr = list_remove_head(tr_list)) != NULL) {
 		if (tr->tr_ds) {
 			mutex_enter(&tr->tr_ds->dd_lock);
 			ASSERT3U(tr->tr_ds->dd_tempreserved[txgidx], >=,
@@ -1476,7 +1500,6 @@ dsl_dir_tempreserve_clear(void *tr_cookie, dmu_tx_t *tx)
 		} else {
 			arc_tempreserve_clear(tr->tr_size);
 		}
-		list_remove(tr_list, tr);
 		kmem_free(tr, sizeof (struct tempreserve));
 	}
 
@@ -2101,6 +2124,8 @@ dsl_dir_rename_sync(void *arg, dmu_tx_t *tx)
 	VERIFY0(dsl_dir_hold(dp, ddra->ddra_newname, FTAG, &newparent,
 	    &mynewname));
 
+	ASSERT3P(mynewname, !=, NULL);
+
 	/* Log this before we change the name. */
 	spa_history_log_internal_dd(dd, "rename", tx,
 	    "-> %s", ddra->ddra_newname);
@@ -2243,13 +2268,25 @@ dsl_dir_snap_cmtime(dsl_dir_t *dd)
 }
 
 void
-dsl_dir_snap_cmtime_update(dsl_dir_t *dd)
+dsl_dir_snap_cmtime_update(dsl_dir_t *dd, dmu_tx_t *tx)
 {
+	dsl_pool_t *dp = dmu_tx_pool(tx);
 	inode_timespec_t t;
-
 	gethrestime(&t);
+
 	mutex_enter(&dd->dd_lock);
 	dd->dd_snap_cmtime = t;
+	if (spa_feature_is_enabled(dp->dp_spa,
+	    SPA_FEATURE_EXTENSIBLE_DATASET)) {
+		objset_t *mos = dd->dd_pool->dp_meta_objset;
+		uint64_t ddobj = dd->dd_object;
+		dsl_dir_zapify(dd, tx);
+		VERIFY0(zap_update(mos, ddobj,
+		    DD_FIELD_SNAPSHOTS_CHANGED,
+		    sizeof (uint64_t),
+		    sizeof (inode_timespec_t) / sizeof (uint64_t),
+		    &t, tx));
+	}
 	mutex_exit(&dd->dd_lock);
 }
 
@@ -2456,3 +2493,7 @@ dsl_dir_cancel_waiters(dsl_dir_t *dd)
 EXPORT_SYMBOL(dsl_dir_set_quota);
 EXPORT_SYMBOL(dsl_dir_set_reservation);
 #endif
+
+/* CSTYLED */
+ZFS_MODULE_PARAM(zfs, , zvol_enforce_quotas, INT, ZMOD_RW,
+	"Enable strict ZVOL quota enforcment");

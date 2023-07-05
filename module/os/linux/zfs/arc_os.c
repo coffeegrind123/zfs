@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -219,7 +219,11 @@ arc_shrinker_scan(struct shrinker *shrink, struct shrink_control *sc)
 	arc_reduce_target_size(ptob(sc->nr_to_scan));
 	arc_wait_for_eviction(ptob(sc->nr_to_scan), B_FALSE);
 	if (current->reclaim_state != NULL)
+#ifdef	HAVE_RECLAIM_STATE_RECLAIMED
+		current->reclaim_state->reclaimed += sc->nr_to_scan;
+#else
 		current->reclaim_state->reclaimed_slab += sc->nr_to_scan;
+#endif
 
 	/*
 	 * We are experiencing memory pressure which the arc_evict_zthr was
@@ -358,11 +362,11 @@ arc_lowmem_fini(void)
 }
 
 int
-param_set_arc_long(const char *buf, zfs_kernel_param_t *kp)
+param_set_arc_u64(const char *buf, zfs_kernel_param_t *kp)
 {
 	int error;
 
-	error = param_set_long(buf, kp);
+	error = spl_param_set_u64(buf, kp);
 	if (error < 0)
 		return (SET_ERROR(error));
 
@@ -374,13 +378,13 @@ param_set_arc_long(const char *buf, zfs_kernel_param_t *kp)
 int
 param_set_arc_min(const char *buf, zfs_kernel_param_t *kp)
 {
-	return (param_set_arc_long(buf, kp));
+	return (param_set_arc_u64(buf, kp));
 }
 
 int
 param_set_arc_max(const char *buf, zfs_kernel_param_t *kp)
 {
-	return (param_set_arc_long(buf, kp));
+	return (param_set_arc_u64(buf, kp));
 }
 
 int
@@ -504,7 +508,7 @@ arc_prune_task(void *ptr)
 /*
  * Notify registered consumers they must drop holds on a portion of the ARC
  * buffered they reference.  This provides a mechanism to ensure the ARC can
- * honor the arc_meta_limit and reclaim otherwise pinned ARC buffers.  This
+ * honor the metadata limit and reclaim otherwise pinned ARC buffers.  This
  * is analogous to dnlc_reduce_cache() but more generic.
  *
  * This operation is performed asynchronously so it may be safely called
@@ -513,7 +517,7 @@ arc_prune_task(void *ptr)
  * for releasing it once the registered arc_prune_func_t has completed.
  */
 void
-arc_prune_async(int64_t adjust)
+arc_prune_async(uint64_t adjust)
 {
 	arc_prune_t *ap;
 

@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -64,7 +64,8 @@ show_vdev_stats(const char *desc, const char *ctype, nvlist_t *nv, int indent)
 	}
 
 	if (desc != NULL) {
-		char *suffix = "", *bias = NULL;
+		const char *suffix = "";
+		const char *bias = NULL;
 		char bias_suffix[32];
 
 		(void) nvlist_lookup_uint64(nv, ZPOOL_CONFIG_IS_LOG, &is_log);
@@ -112,7 +113,8 @@ show_vdev_stats(const char *desc, const char *ctype, nvlist_t *nv, int indent)
 
 	for (c = 0; c < children; c++) {
 		nvlist_t *cnv = child[c];
-		char *cname = NULL, *tname;
+		const char *cname = NULL;
+		char *tname;
 		uint64_t np;
 		int len;
 		if (nvlist_lookup_string(cnv, ZPOOL_CONFIG_PATH, &cname) &&
@@ -132,7 +134,7 @@ void
 show_pool_stats(spa_t *spa)
 {
 	nvlist_t *config, *nvroot;
-	char *name;
+	const char *name;
 
 	VERIFY(spa_get_stats(spa_name(spa), &config, NULL, 0) == 0);
 
@@ -173,12 +175,13 @@ set_global_var_parse_kv(const char *arg, char **k_out, u_longlong_t *v_out)
 		goto err_free;
 	}
 
-	*k_out = k;
+	*k_out = strdup(k);
 	*v_out = val;
+	free(d);
 	return (0);
 
 err_free:
-	free(k);
+	free(d);
 
 	return (err);
 }
@@ -227,13 +230,14 @@ set_global_var(char const *arg)
 		fprintf(stderr, "Failed to open libzpool.so to set global "
 		    "variable\n");
 		ret = EIO;
-		goto out_dlclose;
+		goto out_free;
 	}
 
 	ret = 0;
 
 out_dlclose:
 	dlclose(zpoolhdl);
+out_free:
 	free(varname);
 out_ret:
 	return (ret);
@@ -258,7 +262,9 @@ pool_active(void *unused, const char *name, uint64_t guid, boolean_t *isactive)
 	(void) unused, (void) guid;
 	zfs_iocparm_t zp;
 	zfs_cmd_t *zc = NULL;
+#ifdef ZFS_LEGACY_SUPPORT
 	zfs_cmd_legacy_t *zcl = NULL;
+#endif
 	unsigned long request;
 	int ret;
 
@@ -293,6 +299,7 @@ pool_active(void *unused, const char *name, uint64_t guid, boolean_t *isactive)
 		umem_free(zc, sizeof (zfs_cmd_t));
 
 		break;
+#ifdef ZFS_LEGACY_SUPPORT
 	case ZFS_IOCVER_LEGACY:
 		zcl = umem_zalloc(sizeof (zfs_cmd_legacy_t), UMEM_NOFAIL);
 
@@ -308,6 +315,7 @@ pool_active(void *unused, const char *name, uint64_t guid, boolean_t *isactive)
 		umem_free(zcl, sizeof (zfs_cmd_legacy_t));
 
 		break;
+#endif
 	default:
 		fprintf(stderr, "unrecognized zfs ioctl version %d", ver);
 		exit(1);
@@ -348,7 +356,7 @@ pool_active(void *unused, const char *name, uint64_t guid,
 }
 #endif
 
-const pool_config_ops_t libzpool_config_ops = {
+pool_config_ops_t libzpool_config_ops = {
 	.pco_refresh_config = refresh_config,
 	.pco_pool_active = pool_active,
 };

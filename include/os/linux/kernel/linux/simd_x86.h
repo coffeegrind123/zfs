@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -53,6 +53,8 @@
  *	zfs_bmi1_available()
  *	zfs_bmi2_available()
  *
+ *	zfs_shani_available()
+ *
  *	zfs_avx512f_available()
  *	zfs_avx512cd_available()
  *	zfs_avx512er_available()
@@ -93,7 +95,9 @@
 
 #if defined(HAVE_KERNEL_FPU_API_HEADER)
 #include <asm/fpu/api.h>
+#if defined(HAVE_KERNEL_FPU_INTERNAL_HEADER)
 #include <asm/fpu/internal.h>
+#endif
 #else
 #include <asm/i387.h>
 #endif
@@ -579,6 +583,19 @@ zfs_movbe_available(void)
 {
 #if defined(X86_FEATURE_MOVBE)
 	return (!!boot_cpu_has(X86_FEATURE_MOVBE));
+#else
+	return (B_FALSE);
+#endif
+}
+
+/*
+ * Check if SHA_NI instruction set is available
+ */
+static inline boolean_t
+zfs_shani_available(void)
+{
+#if defined(X86_FEATURE_SHA_NI)
+	return (!!boot_cpu_has(X86_FEATURE_SHA_NI));
 #else
 	return (B_FALSE);
 #endif

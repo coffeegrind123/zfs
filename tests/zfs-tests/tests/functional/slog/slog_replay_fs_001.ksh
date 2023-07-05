@@ -7,7 +7,7 @@
 # You may not use this file except in compliance with the License.
 #
 # You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
-# or http://www.opensolaris.org/os/licensing.
+# or https://opensource.org/licenses/CDDL-1.0.
 # See the License for the specific language governing permissions
 # and limitations under the License.
 #
@@ -174,6 +174,29 @@ log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/link_and_unlink \
 log_must ln /$TESTPOOL/$TESTFS/link_and_unlink \
    /$TESTPOOL/$TESTFS/link_and_unlink.link
 log_must rm /$TESTPOOL/$TESTFS/link_and_unlink.link
+
+# We can't test RENAME_* flags without renameat2(2) support.
+if ! is_linux ; then
+	log_note "renameat2 is linux-only"
+elif ! renameat2 -C ; then
+	log_note "renameat2 not supported on this (pre-3.15) linux kernel"
+else
+	# TX_RENAME_EXCHANGE
+	log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/xchg-a bs=1k count=1
+	log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/xchg-b bs=1k count=1
+	log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/xchg-c bs=1k count=1
+	log_must dd if=/dev/urandom of=/$TESTPOOL/$TESTFS/xchg-d bs=1k count=1
+	# rotate the files around
+	log_must renameat2 -x /$TESTPOOL/$TESTFS/xchg-{a,b}
+	log_must renameat2 -x /$TESTPOOL/$TESTFS/xchg-{b,c}
+	log_must renameat2 -x /$TESTPOOL/$TESTFS/xchg-{c,a}
+	# exchange same path
+	log_must renameat2 -x /$TESTPOOL/$TESTFS/xchg-{d,d}
+
+	# TX_RENAME_WHITEOUT
+	log_must mkfile 1k /$TESTPOOL/$TESTFS/whiteout
+	log_must renameat2 -w /$TESTPOOL/$TESTFS/whiteout{,-moved}
+fi
 
 #
 # 4. Copy TESTFS to temporary location (TESTDIR/copy)

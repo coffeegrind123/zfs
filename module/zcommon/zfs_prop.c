@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -25,9 +25,14 @@
  * Copyright 2016, Joyent, Inc.
  * Copyright (c) 2019, Klara Inc.
  * Copyright (c) 2019, Allan Jude
+ * Copyright (c) 2022 Hewlett Packard Enterprise Development LP.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
+
+#if defined(_KERNEL)
+#include <sys/simd.h>
+#endif
 
 #include <sys/zio.h>
 #include <sys/spa.h>
@@ -84,6 +89,7 @@ zfs_prop_init(void)
 		{ "sha512",	ZIO_CHECKSUM_SHA512 },
 		{ "skein",	ZIO_CHECKSUM_SKEIN },
 		{ "edonr",	ZIO_CHECKSUM_EDONR },
+		{ "blake3",	ZIO_CHECKSUM_BLAKE3 },
 		{ NULL }
 	};
 
@@ -102,6 +108,9 @@ zfs_prop_init(void)
 				ZIO_CHECKSUM_SKEIN | ZIO_CHECKSUM_VERIFY },
 		{ "edonr,verify",
 				ZIO_CHECKSUM_EDONR | ZIO_CHECKSUM_VERIFY },
+		{ "blake3",	ZIO_CHECKSUM_BLAKE3 },
+		{ "blake3,verify",
+				ZIO_CHECKSUM_BLAKE3 | ZIO_CHECKSUM_VERIFY },
 		{ NULL }
 	};
 
@@ -365,6 +374,8 @@ zfs_prop_init(void)
 	static const zprop_index_t redundant_metadata_table[] = {
 		{ "all",	ZFS_REDUNDANT_METADATA_ALL },
 		{ "most",	ZFS_REDUNDANT_METADATA_MOST },
+		{ "some",	ZFS_REDUNDANT_METADATA_SOME },
+		{ "none",	ZFS_REDUNDANT_METADATA_NONE },
 		{ NULL }
 	};
 
@@ -384,7 +395,7 @@ zfs_prop_init(void)
 	zprop_register_index(ZFS_PROP_REDUNDANT_METADATA, "redundant_metadata",
 	    ZFS_REDUNDANT_METADATA_ALL,
 	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME,
-	    "all | most", "REDUND_MD",
+	    "all | most | some | none", "REDUND_MD",
 	    redundant_metadata_table, sfeatures);
 	zprop_register_index(ZFS_PROP_SYNC, "sync", ZFS_SYNC_STANDARD,
 	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME,
@@ -394,12 +405,12 @@ zfs_prop_init(void)
 	    ZIO_CHECKSUM_DEFAULT, PROP_INHERIT, ZFS_TYPE_FILESYSTEM |
 	    ZFS_TYPE_VOLUME,
 	    "on | off | fletcher2 | fletcher4 | sha256 | sha512 | skein"
-	    " | edonr",
+	    " | edonr | blake3",
 	    "CHECKSUM", checksum_table, sfeatures);
 	zprop_register_index(ZFS_PROP_DEDUP, "dedup", ZIO_CHECKSUM_OFF,
 	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME,
 	    "on | off | verify | sha256[,verify] | sha512[,verify] | "
-	    "skein[,verify] | edonr,verify",
+	    "skein[,verify] | edonr,verify | blake3[,verify]",
 	    "DEDUP", dedup_table, sfeatures);
 	zprop_register_index(ZFS_PROP_COMPRESSION, "compression",
 	    ZIO_COMPRESS_DEFAULT, PROP_INHERIT,
@@ -461,7 +472,7 @@ zfs_prop_init(void)
 	/* inherit index (boolean) properties */
 	zprop_register_index(ZFS_PROP_ATIME, "atime", 1, PROP_INHERIT,
 	    ZFS_TYPE_FILESYSTEM, "on | off", "ATIME", boolean_table, sfeatures);
-	zprop_register_index(ZFS_PROP_RELATIME, "relatime", 0, PROP_INHERIT,
+	zprop_register_index(ZFS_PROP_RELATIME, "relatime", 1, PROP_INHERIT,
 	    ZFS_TYPE_FILESYSTEM, "on | off", "RELATIME", boolean_table,
 	    sfeatures);
 	zprop_register_index(ZFS_PROP_DEVICES, "devices", 1, PROP_INHERIT,
@@ -730,12 +741,19 @@ zfs_prop_init(void)
 	    NULL, PROP_READONLY, ZFS_TYPE_DATASET | ZFS_TYPE_BOOKMARK,
 	    "<date>", "CREATION", B_FALSE, B_TRUE, B_TRUE, NULL, sfeatures);
 
+	zprop_register_impl(ZFS_PROP_SNAPSHOTS_CHANGED, "snapshots_changed",
+	    PROP_TYPE_NUMBER, 0, NULL, PROP_READONLY, ZFS_TYPE_FILESYSTEM |
+	    ZFS_TYPE_VOLUME, "<date>", "SNAPSHOTS_CHANGED", B_FALSE, B_TRUE,
+	    B_TRUE, NULL, sfeatures);
+
 	zfs_mod_list_supported_free(sfeatures);
 }
 
 boolean_t
 zfs_prop_delegatable(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	zprop_desc_t *pd = &zfs_prop_table[prop];
 
 	/* The mlslabel property is never delegatable. */
@@ -846,6 +864,8 @@ zfs_prop_valid_for_type(int prop, zfs_type_t types, boolean_t headcheck)
 zprop_type_t
 zfs_prop_get_type(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_proptype);
 }
 
@@ -855,6 +875,8 @@ zfs_prop_get_type(zfs_prop_t prop)
 boolean_t
 zfs_prop_readonly(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_attr == PROP_READONLY ||
 	    zfs_prop_table[prop].pd_attr == PROP_ONETIME ||
 	    zfs_prop_table[prop].pd_attr == PROP_ONETIME_DEFAULT);
@@ -866,6 +888,8 @@ zfs_prop_readonly(zfs_prop_t prop)
 boolean_t
 zfs_prop_visible(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_visible &&
 	    zfs_prop_table[prop].pd_zfs_mod_supported);
 }
@@ -876,6 +900,8 @@ zfs_prop_visible(zfs_prop_t prop)
 boolean_t
 zfs_prop_setonce(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_attr == PROP_ONETIME ||
 	    zfs_prop_table[prop].pd_attr == PROP_ONETIME_DEFAULT);
 }
@@ -883,12 +909,16 @@ zfs_prop_setonce(zfs_prop_t prop)
 const char *
 zfs_prop_default_string(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_strdefault);
 }
 
 uint64_t
 zfs_prop_default_numeric(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_numdefault);
 }
 
@@ -899,6 +929,8 @@ zfs_prop_default_numeric(zfs_prop_t prop)
 const char *
 zfs_prop_to_name(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_name);
 }
 
@@ -908,6 +940,8 @@ zfs_prop_to_name(zfs_prop_t prop)
 boolean_t
 zfs_prop_inheritable(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_attr == PROP_INHERIT ||
 	    zfs_prop_table[prop].pd_attr == PROP_ONETIME);
 }
@@ -960,6 +994,8 @@ zfs_prop_valid_keylocation(const char *str, boolean_t encrypted)
 const char *
 zfs_prop_values(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_values);
 }
 
@@ -971,6 +1007,8 @@ zfs_prop_values(zfs_prop_t prop)
 int
 zfs_prop_is_string(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_proptype == PROP_TYPE_STRING ||
 	    zfs_prop_table[prop].pd_proptype == PROP_TYPE_INDEX);
 }
@@ -982,6 +1020,8 @@ zfs_prop_is_string(zfs_prop_t prop)
 const char *
 zfs_prop_column_name(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_colname);
 }
 
@@ -992,14 +1032,14 @@ zfs_prop_column_name(zfs_prop_t prop)
 boolean_t
 zfs_prop_align_right(zfs_prop_t prop)
 {
+	ASSERT3S(prop, >=, 0);
+	ASSERT3S(prop, <, ZFS_NUM_PROPS);
 	return (zfs_prop_table[prop].pd_rightalign);
 }
 
 #endif
 
 #if defined(_KERNEL)
-
-#include <sys/simd.h>
 
 #if defined(HAVE_KERNEL_FPU_INTERNAL)
 uint8_t **zfs_kfpu_fpregs;

@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -945,17 +945,9 @@ out:
 		memset(aes_ctx.ac_keysched, 0, aes_ctx.ac_keysched_len);
 		kmem_free(aes_ctx.ac_keysched, aes_ctx.ac_keysched_len);
 	}
-#ifdef CAN_USE_GCM_ASM
-	if (aes_ctx.ac_flags & (GCM_MODE|GMAC_MODE) &&
-	    ((gcm_ctx_t *)&aes_ctx)->gcm_Htable != NULL) {
-
-		gcm_ctx_t *ctx = (gcm_ctx_t *)&aes_ctx;
-
-		memset(ctx->gcm_Htable, 0, ctx->gcm_htab_len);
-		kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
+	if (aes_ctx.ac_flags & (GCM_MODE|GMAC_MODE)) {
+		gcm_clear_ctx((gcm_ctx_t *)&aes_ctx);
 	}
-#endif
-
 	return (ret);
 }
 
@@ -1101,18 +1093,7 @@ out:
 			vmem_free(aes_ctx.ac_pt_buf, aes_ctx.ac_data_len);
 		}
 	} else if (aes_ctx.ac_flags & (GCM_MODE|GMAC_MODE)) {
-		if (((gcm_ctx_t *)&aes_ctx)->gcm_pt_buf != NULL) {
-			vmem_free(((gcm_ctx_t *)&aes_ctx)->gcm_pt_buf,
-			    ((gcm_ctx_t *)&aes_ctx)->gcm_pt_buf_len);
-		}
-#ifdef CAN_USE_GCM_ASM
-		if (((gcm_ctx_t *)&aes_ctx)->gcm_Htable != NULL) {
-			gcm_ctx_t *ctx = (gcm_ctx_t *)&aes_ctx;
-
-			memset(ctx->gcm_Htable, 0, ctx->gcm_htab_len);
-			kmem_free(ctx->gcm_Htable, ctx->gcm_htab_len);
-		}
-#endif
+		gcm_clear_ctx((gcm_ctx_t *)&aes_ctx);
 	}
 
 	return (ret);

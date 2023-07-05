@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -243,6 +243,8 @@ typedef struct gcm_ctx {
 
 #define	AES_GMAC_IV_LEN		12
 #define	AES_GMAC_TAG_BITS	128
+
+void gcm_clear_ctx(gcm_ctx_t *ctx);
 
 typedef struct aes_ctx {
 	union {

@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -280,7 +280,7 @@ zpool_in_use(libzfs_handle_t *hdl, int fd, pool_state_t *state, char **namestr,
     boolean_t *inuse)
 {
 	nvlist_t *config;
-	char *name = NULL;
+	const char *name = NULL;
 	boolean_t ret;
 	uint64_t guid = 0, vdev_guid;
 	zpool_handle_t *zhp;

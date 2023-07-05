@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -151,6 +151,7 @@ range_tree_stat_decr(range_tree_t *rt, range_seg_t *rs)
 	rt->rt_histogram[idx]--;
 }
 
+__attribute__((always_inline)) inline
 static int
 range_tree_seg32_compare(const void *x1, const void *x2)
 {
@@ -163,6 +164,7 @@ range_tree_seg32_compare(const void *x1, const void *x2)
 	return ((r1->rs_start >= r2->rs_end) - (r1->rs_end <= r2->rs_start));
 }
 
+__attribute__((always_inline)) inline
 static int
 range_tree_seg64_compare(const void *x1, const void *x2)
 {
@@ -175,6 +177,7 @@ range_tree_seg64_compare(const void *x1, const void *x2)
 	return ((r1->rs_start >= r2->rs_end) - (r1->rs_end <= r2->rs_start));
 }
 
+__attribute__((always_inline)) inline
 static int
 range_tree_seg_gap_compare(const void *x1, const void *x2)
 {
@@ -187,11 +190,18 @@ range_tree_seg_gap_compare(const void *x1, const void *x2)
 	return ((r1->rs_start >= r2->rs_end) - (r1->rs_end <= r2->rs_start));
 }
 
+ZFS_BTREE_FIND_IN_BUF_FUNC(range_tree_seg32_find_in_buf, range_seg32_t,
+    range_tree_seg32_compare)
+
+ZFS_BTREE_FIND_IN_BUF_FUNC(range_tree_seg64_find_in_buf, range_seg64_t,
+    range_tree_seg64_compare)
+
+ZFS_BTREE_FIND_IN_BUF_FUNC(range_tree_seg_gap_find_in_buf, range_seg_gap_t,
+    range_tree_seg_gap_compare)
+
 range_tree_t *
-range_tree_create_impl(const range_tree_ops_t *ops, range_seg_type_t type,
-    void *arg, uint64_t start, uint64_t shift,
-    int (*zfs_btree_compare) (const void *, const void *),
-    uint64_t gap)
+range_tree_create_gap(const range_tree_ops_t *ops, range_seg_type_t type,
+    void *arg, uint64_t start, uint64_t shift, uint64_t gap)
 {
 	range_tree_t *rt = kmem_zalloc(sizeof (range_tree_t), KM_SLEEP);
 
@@ -199,23 +209,27 @@ range_tree_create_impl(const range_tree_ops_t *ops, range_seg_type_t type,
 	ASSERT3U(type, <=, RANGE_SEG_NUM_TYPES);
 	size_t size;
 	int (*compare) (const void *, const void *);
+	bt_find_in_buf_f bt_find;
 	switch (type) {
 	case RANGE_SEG32:
 		size = sizeof (range_seg32_t);
 		compare = range_tree_seg32_compare;
+		bt_find = range_tree_seg32_find_in_buf;
 		break;
 	case RANGE_SEG64:
 		size = sizeof (range_seg64_t);
 		compare = range_tree_seg64_compare;
+		bt_find = range_tree_seg64_find_in_buf;
 		break;
 	case RANGE_SEG_GAP:
 		size = sizeof (range_seg_gap_t);
 		compare = range_tree_seg_gap_compare;
+		bt_find = range_tree_seg_gap_find_in_buf;
 		break;
 	default:
 		panic("Invalid range seg type %d", type);
 	}
-	zfs_btree_create(&rt->rt_root, compare, size);
+	zfs_btree_create(&rt->rt_root, compare, bt_find, size);
 
 	rt->rt_ops = ops;
 	rt->rt_gap = gap;
@@ -223,7 +237,6 @@ range_tree_create_impl(const range_tree_ops_t *ops, range_seg_type_t type,
 	rt->rt_type = type;
 	rt->rt_start = start;
 	rt->rt_shift = shift;
-	rt->rt_btree_compare = zfs_btree_compare;
 
 	if (rt->rt_ops != NULL && rt->rt_ops->rtop_create != NULL)
 		rt->rt_ops->rtop_create(rt, rt->rt_arg);
@@ -235,7 +248,7 @@ range_tree_t *
 range_tree_create(const range_tree_ops_t *ops, range_seg_type_t type,
     void *arg, uint64_t start, uint64_t shift)
 {
-	return (range_tree_create_impl(ops, type, arg, start, shift, NULL, 0));
+	return (range_tree_create_gap(ops, type, arg, start, shift, 0));
 }
 
 void
@@ -372,6 +385,7 @@ range_tree_add_impl(void *arg, uint64_t start, uint64_t size, uint64_t fill)
 		 * invalid as soon as we do any mutating btree operations.
 		 */
 		rs_after = zfs_btree_find(&rt->rt_root, &tmp, &where_after);
+		ASSERT3P(rs_after, !=, NULL);
 		rs_set_start_raw(rs_after, rt, before_start);
 		rs_set_fill(rs_after, rt, after_fill + before_fill + fill);
 		rs = rs_after;
@@ -740,74 +754,6 @@ range_tree_is_empty(range_tree_t *rt)
 	ASSERT(rt != NULL);
 	return (range_tree_space(rt) == 0);
 }
-
-void
-rt_btree_create(range_tree_t *rt, void *arg)
-{
-	zfs_btree_t *size_tree = arg;
-
-	size_t size;
-	switch (rt->rt_type) {
-	case RANGE_SEG32:
-		size = sizeof (range_seg32_t);
-		break;
-	case RANGE_SEG64:
-		size = sizeof (range_seg64_t);
-		break;
-	case RANGE_SEG_GAP:
-		size = sizeof (range_seg_gap_t);
-		break;
-	default:
-		panic("Invalid range seg type %d", rt->rt_type);
-	}
-	zfs_btree_create(size_tree, rt->rt_btree_compare, size);
-}
-
-void
-rt_btree_destroy(range_tree_t *rt, void *arg)
-{
-	(void) rt;
-	zfs_btree_t *size_tree = arg;
-	ASSERT0(zfs_btree_numnodes(size_tree));
-
-	zfs_btree_destroy(size_tree);
-}
-
-void
-rt_btree_add(range_tree_t *rt, range_seg_t *rs, void *arg)
-{
-	(void) rt;
-	zfs_btree_t *size_tree = arg;
-
-	zfs_btree_add(size_tree, rs);
-}
-
-void
-rt_btree_remove(range_tree_t *rt, range_seg_t *rs, void *arg)
-{
-	(void) rt;
-	zfs_btree_t *size_tree = arg;
-
-	zfs_btree_remove(size_tree, rs);
-}
-
-void
-rt_btree_vacate(range_tree_t *rt, void *arg)
-{
-	zfs_btree_t *size_tree = arg;
-	zfs_btree_clear(size_tree);
-	zfs_btree_destroy(size_tree);
-
-	rt_btree_create(rt, arg);
-}
-
-const range_tree_ops_t rt_btree_ops = {
-	.rtop_create = rt_btree_create,
-	.rtop_destroy = rt_btree_destroy,
-	.rtop_add = rt_btree_add,
-	.rtop_remove = rt_btree_remove,
-	.rtop_vacate = rt_btree_vacate
-};
 
 /*
  * Remove any overlapping ranges between the given segment [start, end)

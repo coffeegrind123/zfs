@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -168,9 +168,9 @@ zpool_open_func(void *arg)
 	 * Add additional entries for paths described by this label.
 	 */
 	if (rn->rn_labelpaths) {
-		char *path = NULL;
-		char *devid = NULL;
-		char *env = NULL;
+		const char *path = NULL;
+		const char *devid = NULL;
+		const char *env = NULL;
 		rdsk_node_t *slice;
 		avl_index_t where;
 		int timeout;
@@ -328,7 +328,9 @@ zpool_find_import_blkid(libpc_handle_t *hdl, pthread_mutex_t *lock,
 		return (EINVAL);
 	}
 
-	error = blkid_dev_set_search(iter, "TYPE", "zfs_member");
+	/* Only const char *s since 2.32 */
+	error = blkid_dev_set_search(iter,
+	    (char *)"TYPE", (char *)"zfs_member");
 	if (error != 0) {
 		blkid_dev_iterate_end(iter);
 		blkid_put_cache(cache);
@@ -767,7 +769,7 @@ no_dev:
  *    vdev_enc_sysfs_path: '/sys/class/enclosure/11:0:1:0/SLOT 4'
  */
 static void
-update_vdev_config_dev_sysfs_path(nvlist_t *nv, char *path)
+update_vdev_config_dev_sysfs_path(nvlist_t *nv, const char *path)
 {
 	char *upath, *spath;
 
@@ -793,7 +795,7 @@ sysfs_path_pool_vdev_iter_f(void *hdl_data, nvlist_t *nv, void *data)
 {
 	(void) hdl_data, (void) data;
 
-	char *path = NULL;
+	const char *path = NULL;
 	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_PATH, &path) != 0)
 		return (1);
 
@@ -839,7 +841,7 @@ void
 update_vdev_config_dev_strs(nvlist_t *nv)
 {
 	vdev_dev_strs_t vds;
-	char *env, *type, *path;
+	const char *env, *type, *path;
 	uint64_t wholedisk = 0;
 
 	/*

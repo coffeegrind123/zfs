@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -26,10 +26,10 @@
  * Copyright 2013 Saso Kiselkov. All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
  * Copyright 2017 Joyent, Inc.
- * Copyright (c) 2017, 2019, Datto Inc. All rights reserved.
  * Copyright (c) 2017, Intel Corporation.
  * Copyright (c) 2019, Allan Jude
  * Copyright (c) 2019, Klara Inc.
+ * Copyright (c) 2019, Datto Inc.
  */
 
 #ifndef _SYS_SPA_H
@@ -65,6 +65,7 @@ typedef struct spa_aux_vdev spa_aux_vdev_t;
 typedef struct ddt ddt_t;
 typedef struct ddt_entry ddt_entry_t;
 typedef struct zbookmark_phys zbookmark_phys_t;
+typedef struct zbookmark_err_phys zbookmark_err_phys_t;
 
 struct bpobj;
 struct bplist;
@@ -600,13 +601,13 @@ typedef struct blkptr {
 
 /*
  * This macro allows code sharing between zfs, libzpool, and mdb.
- * 'func' is either snprintf() or mdb_snprintf().
+ * 'func' is either kmem_scnprintf() or mdb_snprintf().
  * 'ws' (whitespace) can be ' ' for single-line format, '\n' for multi-line.
  */
 
 #define	SNPRINTF_BLKPTR(func, ws, buf, size, bp, type, checksum, compress) \
 {									\
-	static const char *copyname[] =					\
+	static const char *const copyname[] =				\
 	    { "zero", "single", "double", "triple" };			\
 	int len = 0;							\
 	int copies = 0;							\
@@ -663,6 +664,7 @@ typedef struct blkptr {
 			    (u_longlong_t)DVA_GET_ASIZE(dva),		\
 			    ws);					\
 		}							\
+		ASSERT3S(copies, >, 0);					\
 		if (BP_IS_ENCRYPTED(bp)) {				\
 			len += func(buf + len, size - len,		\
 			    "salt=%llx iv=%llx:%llx%c",			\
@@ -678,7 +680,7 @@ typedef struct blkptr {
 		len += func(buf + len, size - len,			\
 		    "[L%llu %s] %s %s %s %s %s %s %s%c"			\
 		    "size=%llxL/%llxP birth=%lluL/%lluP fill=%llu%c"	\
-		    "cksum=%llx:%llx:%llx:%llx",			\
+		    "cksum=%016llx:%016llx:%016llx:%016llx",		\
 		    (u_longlong_t)BP_GET_LEVEL(bp),			\
 		    type,						\
 		    checksum,						\
@@ -743,8 +745,8 @@ typedef enum trim_type {
 } trim_type_t;
 
 /* state manipulation functions */
-extern int spa_open(const char *pool, spa_t **, void *tag);
-extern int spa_open_rewind(const char *pool, spa_t **, void *tag,
+extern int spa_open(const char *pool, spa_t **, const void *tag);
+extern int spa_open_rewind(const char *pool, spa_t **, const void *tag,
     nvlist_t *policy, nvlist_t **config);
 extern int spa_get_stats(const char *pool, nvlist_t **config, char *altroot,
     size_t buflen);
@@ -785,6 +787,7 @@ extern int bpobj_enqueue_free_cb(void *arg, const blkptr_t *bp, dmu_tx_t *tx);
 #define	SPA_ASYNC_L2CACHE_REBUILD		0x800
 #define	SPA_ASYNC_L2CACHE_TRIM			0x1000
 #define	SPA_ASYNC_REBUILD_DONE			0x2000
+#define	SPA_ASYNC_DETACH_SPARE			0x4000
 
 /* device manipulation */
 extern int spa_vdev_add(spa_t *spa, nvlist_t *nvroot);
@@ -801,8 +804,8 @@ extern int spa_vdev_trim(spa_t *spa, nvlist_t *nv, uint64_t cmd_type,
     uint64_t rate, boolean_t partial, boolean_t secure, nvlist_t *vdev_errlist);
 extern int spa_vdev_setpath(spa_t *spa, uint64_t guid, const char *newpath);
 extern int spa_vdev_setfru(spa_t *spa, uint64_t guid, const char *newfru);
-extern int spa_vdev_split_mirror(spa_t *spa, char *newname, nvlist_t *config,
-    nvlist_t *props, boolean_t exp);
+extern int spa_vdev_split_mirror(spa_t *spa, const char *newname,
+    nvlist_t *config, nvlist_t *props, boolean_t exp);
 
 /* spare state (which is global across all pools) */
 extern void spa_spare_add(vdev_t *vd);
@@ -826,7 +829,7 @@ extern int spa_scrub_pause_resume(spa_t *spa, pool_scrub_cmd_t flag);
 extern void spa_sync(spa_t *spa, uint64_t txg); /* only for DMU use */
 extern void spa_sync_allpools(void);
 
-extern int zfs_sync_pass_deferred_free;
+extern uint_t zfs_sync_pass_deferred_free;
 
 /* spa namespace global mutex */
 extern kmutex_t spa_namespace_lock;
@@ -838,7 +841,7 @@ extern kmutex_t spa_namespace_lock;
 #define	SPA_CONFIG_UPDATE_POOL	0
 #define	SPA_CONFIG_UPDATE_VDEVS	1
 
-extern void spa_write_cachefile(spa_t *, boolean_t, boolean_t);
+extern void spa_write_cachefile(spa_t *, boolean_t, boolean_t, boolean_t);
 extern void spa_config_load(void);
 extern nvlist_t *spa_all_configs(uint64_t *);
 extern void spa_config_set(spa_t *spa, nvlist_t *config);
@@ -860,9 +863,9 @@ extern void spa_remove(spa_t *spa);
 extern spa_t *spa_next(spa_t *prev);
 
 /* Refcount functions */
-extern void spa_open_ref(spa_t *spa, void *tag);
-extern void spa_close(spa_t *spa, void *tag);
-extern void spa_async_close(spa_t *spa, void *tag);
+extern void spa_open_ref(spa_t *spa, const void *tag);
+extern void spa_close(spa_t *spa, const void *tag);
+extern void spa_async_close(spa_t *spa, const void *tag);
 extern boolean_t spa_refcount_zero(spa_t *spa);
 
 #define	SCL_NONE	0x00
@@ -898,6 +901,7 @@ typedef struct spa_stats {
 	spa_history_kstat_t	tx_assign_histogram;
 	spa_history_list_t	mmp_history;
 	spa_history_kstat_t	state;		/* pool state */
+	spa_history_kstat_t	guid;		/* pool guid */
 	spa_history_kstat_t	iostats;
 } spa_stats_t;
 
@@ -970,8 +974,11 @@ extern int spa_import_progress_set_state(uint64_t pool_guid,
     spa_load_state_t spa_load_state);
 
 /* Pool configuration locks */
-extern int spa_config_tryenter(spa_t *spa, int locks, void *tag, krw_t rw);
+extern int spa_config_tryenter(spa_t *spa, int locks, const void *tag,
+    krw_t rw);
 extern void spa_config_enter(spa_t *spa, int locks, const void *tag, krw_t rw);
+extern void spa_config_enter_mmp(spa_t *spa, int locks, const void *tag,
+    krw_t rw);
 extern void spa_config_exit(spa_t *spa, int locks, const void *tag);
 extern int spa_config_held(spa_t *spa, int locks, krw_t rw);
 
@@ -980,7 +987,7 @@ extern uint64_t spa_vdev_enter(spa_t *spa);
 extern uint64_t spa_vdev_detach_enter(spa_t *spa, uint64_t guid);
 extern uint64_t spa_vdev_config_enter(spa_t *spa);
 extern void spa_vdev_config_exit(spa_t *spa, vdev_t *vd, uint64_t txg,
-    int error, char *tag);
+    int error, const char *tag);
 extern int spa_vdev_exit(spa_t *spa, vdev_t *vd, uint64_t txg, int error);
 
 /* Pool vdev state change lock */
@@ -1011,7 +1018,7 @@ extern boolean_t spa_indirect_vdevs_loaded(spa_t *spa);
 extern blkptr_t *spa_get_rootblkptr(spa_t *spa);
 extern void spa_set_rootblkptr(spa_t *spa, const blkptr_t *bp);
 extern void spa_altroot(spa_t *, char *, size_t);
-extern int spa_sync_pass(spa_t *spa);
+extern uint32_t spa_sync_pass(spa_t *spa);
 extern char *spa_name(spa_t *spa);
 extern uint64_t spa_guid(spa_t *spa);
 extern uint64_t spa_load_guid(spa_t *spa);
@@ -1131,7 +1138,10 @@ extern const char *spa_state_to_name(spa_t *spa);
 
 /* error handling */
 struct zbookmark_phys;
-extern void spa_log_error(spa_t *spa, const zbookmark_phys_t *zb);
+extern void spa_log_error(spa_t *spa, const zbookmark_phys_t *zb,
+    const uint64_t *birth);
+extern void spa_remove_error(spa_t *spa, zbookmark_phys_t *zb,
+    const uint64_t *birth);
 extern int zfs_ereport_post(const char *clazz, spa_t *spa, vdev_t *vd,
     const zbookmark_phys_t *zb, zio_t *zio, uint64_t state);
 extern boolean_t zfs_ereport_is_valid(const char *clazz, spa_t *spa, vdev_t *vd,
@@ -1143,16 +1153,26 @@ extern nvlist_t *zfs_event_create(spa_t *spa, vdev_t *vd, const char *type,
 extern void zfs_post_remove(spa_t *spa, vdev_t *vd);
 extern void zfs_post_state_change(spa_t *spa, vdev_t *vd, uint64_t laststate);
 extern void zfs_post_autoreplace(spa_t *spa, vdev_t *vd);
-extern uint64_t spa_get_errlog_size(spa_t *spa);
-extern int spa_get_errlog(spa_t *spa, void *uaddr, size_t *count);
+extern uint64_t spa_approx_errlog_size(spa_t *spa);
+extern int spa_get_errlog(spa_t *spa, void *uaddr, uint64_t *count);
+extern uint64_t spa_get_last_errlog_size(spa_t *spa);
 extern void spa_errlog_rotate(spa_t *spa);
 extern void spa_errlog_drain(spa_t *spa);
 extern void spa_errlog_sync(spa_t *spa, uint64_t txg);
 extern void spa_get_errlists(spa_t *spa, avl_tree_t *last, avl_tree_t *scrub);
-
-/* vdev cache */
-extern void vdev_cache_stat_init(void);
-extern void vdev_cache_stat_fini(void);
+extern void spa_delete_dataset_errlog(spa_t *spa, uint64_t ds, dmu_tx_t *tx);
+extern void spa_swap_errlog(spa_t *spa, uint64_t new_head_ds,
+    uint64_t old_head_ds, dmu_tx_t *tx);
+extern void sync_error_list(spa_t *spa, avl_tree_t *t, uint64_t *obj,
+    dmu_tx_t *tx);
+extern void spa_upgrade_errlog(spa_t *spa, dmu_tx_t *tx);
+extern int find_top_affected_fs(spa_t *spa, uint64_t head_ds,
+    zbookmark_err_phys_t *zep, uint64_t *top_affected_fs);
+extern int find_birth_txg(struct dsl_dataset *ds, zbookmark_err_phys_t *zep,
+    uint64_t *birth_txg);
+extern void zep_to_zb(uint64_t dataset, zbookmark_err_phys_t *zep,
+    zbookmark_phys_t *zb);
+extern void name_to_errphys(char *buf, zbookmark_err_phys_t *zep);
 
 /* vdev mirror */
 extern void vdev_mirror_stat_init(void);
@@ -1209,9 +1229,9 @@ int param_set_deadman_failmode(ZFS_MODULE_PARAM_ARGS);
 
 extern spa_mode_t spa_mode_global;
 extern int zfs_deadman_enabled;
-extern unsigned long zfs_deadman_synctime_ms;
-extern unsigned long zfs_deadman_ziotime_ms;
-extern unsigned long zfs_deadman_checktime_ms;
+extern uint64_t zfs_deadman_synctime_ms;
+extern uint64_t zfs_deadman_ziotime_ms;
+extern uint64_t zfs_deadman_checktime_ms;
 
 extern kmem_cache_t *zio_buf_cache[];
 extern kmem_cache_t *zio_data_buf_cache[];

@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -33,7 +33,7 @@
 #include <libaio.h>
 #include <err.h>
 
-io_context_t io_ctx;
+static io_context_t io_ctx;
 
 static void
 do_sync_io(struct iocb *iocb)

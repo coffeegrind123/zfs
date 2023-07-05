@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -36,6 +36,7 @@
 #include <sys/dmu_zfetch.h>
 #include <sys/zrlock.h>
 #include <sys/multilist.h>
+#include <sys/wmsum.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -119,7 +120,11 @@ extern "C" {
 #define	DN_MAX_LEVELS	(DIV_ROUND_UP(DN_MAX_OFFSET_SHIFT - SPA_MINBLOCKSHIFT, \
 	DN_MIN_INDBLKSHIFT - SPA_BLKPTRSHIFT) + 1)
 
-#define	DN_BONUS(dnp)	((void*)((dnp)->dn_bonus + \
+/*
+ * Use the flexible array instead of the fixed length one dn_bonus
+ * to address memcpy/memmove fortify error
+ */
+#define	DN_BONUS(dnp)	((void*)((dnp)->dn_bonus_flexible + \
 	(((dnp)->dn_nblkptr - 1) * sizeof (blkptr_t))))
 #define	DN_MAX_BONUS_LEN(dnp) \
 	((dnp->dn_flags & DNODE_FLAG_SPILL_BLKPTR) ? \
@@ -265,6 +270,10 @@ typedef struct dnode_phys {
 			    sizeof (blkptr_t)];
 			blkptr_t dn_spill;
 		};
+		struct {
+			blkptr_t __dn_ignore4;
+			uint8_t dn_bonus_flexible[];
+		};
 	};
 } dnode_phys_t;
 
@@ -334,7 +343,7 @@ struct dnode {
 	kcondvar_t dn_notxholds;
 	kcondvar_t dn_nodnholds;
 	enum dnode_dirtycontext dn_dirtyctx;
-	void *dn_dirtyctx_firstset;		/* dbg: contents meaningless */
+	const void *dn_dirtyctx_firstset;	/* dbg: contents meaningless */
 
 	/* protected by own devices */
 	zfs_refcount_t dn_tx_holds;
@@ -418,16 +427,16 @@ void dnode_setbonus_type(dnode_t *dn, dmu_object_type_t, dmu_tx_t *tx);
 void dnode_rm_spill(dnode_t *dn, dmu_tx_t *tx);
 
 int dnode_hold(struct objset *dd, uint64_t object,
-    void *ref, dnode_t **dnp);
+    const void *ref, dnode_t **dnp);
 int dnode_hold_impl(struct objset *dd, uint64_t object, int flag, int dn_slots,
-    void *ref, dnode_t **dnp);
-boolean_t dnode_add_ref(dnode_t *dn, void *ref);
-void dnode_rele(dnode_t *dn, void *ref);
-void dnode_rele_and_unlock(dnode_t *dn, void *tag, boolean_t evicting);
+    const void *ref, dnode_t **dnp);
+boolean_t dnode_add_ref(dnode_t *dn, const void *ref);
+void dnode_rele(dnode_t *dn, const void *ref);
+void dnode_rele_and_unlock(dnode_t *dn, const void *tag, boolean_t evicting);
 int dnode_try_claim(objset_t *os, uint64_t object, int slots);
 boolean_t dnode_is_dirty(dnode_t *dn);
 void dnode_setdirty(dnode_t *dn, dmu_tx_t *tx);
-void dnode_set_dirtyctx(dnode_t *dn, dmu_tx_t *tx, void *tag);
+void dnode_set_dirtyctx(dnode_t *dn, dmu_tx_t *tx, const void *tag);
 void dnode_sync(dnode_t *dn, dmu_tx_t *tx);
 void dnode_allocate(dnode_t *dn, dmu_object_type_t ot, int blocksize, int ibs,
     dmu_object_type_t bonustype, int bonuslen, int dn_slots, dmu_tx_t *tx);
@@ -456,14 +465,10 @@ void dnode_free_interior_slots(dnode_t *dn);
 #define	DNODE_IS_DIRTY(_dn)						\
 	((_dn)->dn_dirty_txg >= spa_syncing_txg((_dn)->dn_objset->os_spa))
 
-#define	DNODE_IS_CACHEABLE(_dn)						\
+#define	DNODE_LEVEL_IS_CACHEABLE(_dn, _level)				\
 	((_dn)->dn_objset->os_primary_cache == ZFS_CACHE_ALL ||		\
-	(DMU_OT_IS_METADATA((_dn)->dn_type) &&				\
+	(((_level) > 0 || DMU_OT_IS_METADATA((_dn)->dn_type)) &&	\
 	(_dn)->dn_objset->os_primary_cache == ZFS_CACHE_METADATA))
-
-#define	DNODE_META_IS_CACHEABLE(_dn)					\
-	((_dn)->dn_objset->os_primary_cache == ZFS_CACHE_ALL ||		\
-	(_dn)->dn_objset->os_primary_cache == ZFS_CACHE_METADATA)
 
 /*
  * Used for dnodestats kstat.
@@ -587,10 +592,42 @@ typedef struct dnode_stats {
 	kstat_named_t dnode_move_active;
 } dnode_stats_t;
 
+typedef struct dnode_sums {
+	wmsum_t dnode_hold_dbuf_hold;
+	wmsum_t dnode_hold_dbuf_read;
+	wmsum_t dnode_hold_alloc_hits;
+	wmsum_t dnode_hold_alloc_misses;
+	wmsum_t dnode_hold_alloc_interior;
+	wmsum_t dnode_hold_alloc_lock_retry;
+	wmsum_t dnode_hold_alloc_lock_misses;
+	wmsum_t dnode_hold_alloc_type_none;
+	wmsum_t dnode_hold_free_hits;
+	wmsum_t dnode_hold_free_misses;
+	wmsum_t dnode_hold_free_lock_misses;
+	wmsum_t dnode_hold_free_lock_retry;
+	wmsum_t dnode_hold_free_refcount;
+	wmsum_t dnode_hold_free_overflow;
+	wmsum_t dnode_free_interior_lock_retry;
+	wmsum_t dnode_allocate;
+	wmsum_t dnode_reallocate;
+	wmsum_t dnode_buf_evict;
+	wmsum_t dnode_alloc_next_chunk;
+	wmsum_t dnode_alloc_race;
+	wmsum_t dnode_alloc_next_block;
+	wmsum_t dnode_move_invalid;
+	wmsum_t dnode_move_recheck1;
+	wmsum_t dnode_move_recheck2;
+	wmsum_t dnode_move_special;
+	wmsum_t dnode_move_handle;
+	wmsum_t dnode_move_rwlock;
+	wmsum_t dnode_move_active;
+} dnode_sums_t;
+
 extern dnode_stats_t dnode_stats;
+extern dnode_sums_t dnode_sums;
 
 #define	DNODE_STAT_INCR(stat, val) \
-    atomic_add_64(&dnode_stats.stat.value.ui64, (val));
+    wmsum_add(&dnode_sums.stat, (val))
 #define	DNODE_STAT_BUMP(stat) \
     DNODE_STAT_INCR(stat, 1);
 
@@ -616,7 +653,7 @@ extern dnode_stats_t dnode_stats;
 #else
 
 #define	dprintf_dnode(db, fmt, ...)
-#define	DNODE_VERIFY(dn)
+#define	DNODE_VERIFY(dn)		((void) sizeof ((uintptr_t)(dn)))
 #define	FREE_VERIFY(db, start, end, tx)
 
 #endif

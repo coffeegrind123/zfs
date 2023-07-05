@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -56,7 +56,6 @@
 #include <sys/sunddi.h>
 #include <sys/dmu_objset.h>
 #include <sys/dsl_dir.h>
-#include <sys/spa_boot.h>
 #include <sys/objlist.h>
 #include <sys/zpl.h>
 #include <linux/vfs_compat.h>
@@ -274,8 +273,10 @@ zfs_sync(struct super_block *sb, int wait, cred_t *cr)
 		 * Sync a specific filesystem.
 		 */
 		dsl_pool_t *dp;
+		int error;
 
-		ZFS_ENTER(zfsvfs);
+		if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
+			return (error);
 		dp = dmu_objset_pool(zfsvfs->z_os);
 
 		/*
@@ -283,14 +284,14 @@ zfs_sync(struct super_block *sb, int wait, cred_t *cr)
 		 * filesystems which may exist on a suspended pool.
 		 */
 		if (spa_suspended(dp->dp_spa)) {
-			ZFS_EXIT(zfsvfs);
+			zfs_exit(zfsvfs, FTAG);
 			return (0);
 		}
 
 		if (zfsvfs->z_log != NULL)
 			zil_commit(zfsvfs->z_log, 0);
 
-		ZFS_EXIT(zfsvfs);
+		zfs_exit(zfsvfs, FTAG);
 	} else {
 		/*
 		 * Sync all ZFS filesystems.  This is what happens when you
@@ -607,7 +608,8 @@ zfs_get_temporary_prop(dsl_dataset_t *ds, zfs_prop_t zfs_prop, uint64_t *val,
 	}
 
 	if (tmp != *val) {
-		(void) strcpy(setpoint, "temporary");
+		if (setpoint)
+			(void) strcpy(setpoint, "temporary");
 		*val = tmp;
 	}
 	return (0);
@@ -783,9 +785,7 @@ zfsvfs_create(const char *osname, boolean_t readonly, zfsvfs_t **zfvp)
 	}
 
 	error = zfsvfs_create_impl(zfvp, zfsvfs, os);
-	if (error != 0) {
-		dmu_objset_disown(os, B_TRUE, zfsvfs);
-	}
+
 	return (error);
 }
 
@@ -825,6 +825,7 @@ zfsvfs_create_impl(zfsvfs_t **zfvp, zfsvfs_t *zfsvfs, objset_t *os)
 
 	error = zfsvfs_init(zfsvfs, os);
 	if (error != 0) {
+		dmu_objset_disown(os, B_TRUE, zfsvfs);
 		*zfvp = NULL;
 		zfsvfs_free(zfsvfs);
 		return (error);
@@ -848,8 +849,6 @@ zfsvfs_setup(zfsvfs_t *zfsvfs, boolean_t mounting)
 	if (error)
 		return (error);
 
-	zfsvfs->z_log = zil_open(zfsvfs->z_os, zfs_get_data);
-
 	/*
 	 * If we are not mounting (ie: online recv), then we don't
 	 * have to worry about replaying the log as we blocked all
@@ -857,7 +856,11 @@ zfsvfs_setup(zfsvfs_t *zfsvfs, boolean_t mounting)
 	 */
 	if (mounting) {
 		ASSERT3P(zfsvfs->z_kstat.dk_kstats, ==, NULL);
-		dataset_kstats_create(&zfsvfs->z_kstat, zfsvfs->z_os);
+		error = dataset_kstats_create(&zfsvfs->z_kstat, zfsvfs->z_os);
+		if (error)
+			return (error);
+		zfsvfs->z_log = zil_open(zfsvfs->z_os, zfs_get_data,
+		    &zfsvfs->z_kstat.dk_zil_sums);
 
 		/*
 		 * During replay we remove the read only flag to
@@ -921,6 +924,10 @@ zfsvfs_setup(zfsvfs_t *zfsvfs, boolean_t mounting)
 		/* restore readonly bit */
 		if (readonly != 0)
 			readonly_changed_cb(zfsvfs, B_TRUE);
+	} else {
+		ASSERT3P(zfsvfs->z_kstat.dk_kstats, !=, NULL);
+		zfsvfs->z_log = zil_open(zfsvfs->z_os, zfs_get_data,
+		    &zfsvfs->z_kstat.dk_zil_sums);
 	}
 
 	/*
@@ -1087,7 +1094,8 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 	uint64_t refdbytes, availbytes, usedobjs, availobjs;
 	int err = 0;
 
-	ZFS_ENTER(zfsvfs);
+	if ((err = zfs_enter(zfsvfs, FTAG)) != 0)
+		return (err);
 
 	dmu_objset_space(zfsvfs->z_os,
 	    &refdbytes, &availbytes, &usedobjs, &availobjs);
@@ -1148,7 +1156,7 @@ zfs_statvfs(struct inode *ip, struct kstatfs *statp)
 			err = zfs_statfs_project(zfsvfs, zp, statp, bshift);
 	}
 
-	ZFS_EXIT(zfsvfs);
+	zfs_exit(zfsvfs, FTAG);
 	return (err);
 }
 
@@ -1158,13 +1166,14 @@ zfs_root(zfsvfs_t *zfsvfs, struct inode **ipp)
 	znode_t *rootzp;
 	int error;
 
-	ZFS_ENTER(zfsvfs);
+	if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
+		return (error);
 
 	error = zfs_zget(zfsvfs, zfsvfs->z_root, &rootzp);
 	if (error == 0)
 		*ipp = ZTOI(rootzp);
 
-	ZFS_EXIT(zfsvfs);
+	zfs_exit(zfsvfs, FTAG);
 	return (error);
 }
 
@@ -1185,7 +1194,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 	int objects = 0;
 	int i = 0, j = 0;
 
-	zp_array = kmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
+	zp_array = vmem_zalloc(max_array * sizeof (znode_t *), KM_SLEEP);
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	while ((zp = list_head(&zfsvfs->z_all_znodes)) != NULL) {
@@ -1221,7 +1230,7 @@ zfs_prune_aliases(zfsvfs_t *zfsvfs, unsigned long nr_to_scan)
 		zrele(zp);
 	}
 
-	kmem_free(zp_array, max_array * sizeof (znode_t *));
+	vmem_free(zp_array, max_array * sizeof (znode_t *));
 
 	return (objects);
 }
@@ -1242,7 +1251,8 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 		.gfp_mask = GFP_KERNEL,
 	};
 
-	ZFS_ENTER(zfsvfs);
+	if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
+		return (error);
 
 #if defined(HAVE_SPLIT_SHRINKER_CALLBACK) && \
 	defined(SHRINK_CONTROL_HAS_NID) && \
@@ -1283,7 +1293,7 @@ zfs_prune(struct super_block *sb, unsigned long nr_to_scan, int *objects)
 		*objects = zfs_prune_aliases(zfsvfs, nr_to_scan);
 #endif
 
-	ZFS_EXIT(zfsvfs);
+	zfs_exit(zfsvfs, FTAG);
 
 	dprintf_ds(zfsvfs->z_os->os_dsl_dataset,
 	    "pruning, nr_to_scan=%lu objects=%d error=%d\n",
@@ -1453,13 +1463,33 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	int error = 0;
 	zfsvfs_t *zfsvfs = NULL;
 	vfs_t *vfs = NULL;
+	int canwrite;
+	int dataset_visible_zone;
 
 	ASSERT(zm);
 	ASSERT(osname);
 
+	dataset_visible_zone = zone_dataset_visible(osname, &canwrite);
+
+	/*
+	 * Refuse to mount a filesystem if we are in a namespace and the
+	 * dataset is not visible or writable in that namespace.
+	 */
+	if (!INGLOBALZONE(curproc) &&
+	    (!dataset_visible_zone || !canwrite)) {
+		return (SET_ERROR(EPERM));
+	}
+
 	error = zfsvfs_parse_options(zm->mnt_data, &vfs);
 	if (error)
 		return (error);
+
+	/*
+	 * If a non-writable filesystem is being mounted without the
+	 * read-only flag, pretend it was set, as done for snapshots.
+	 */
+	if (!canwrite)
+		vfs->vfs_readonly = true;
 
 	error = zfsvfs_create(osname, vfs->vfs_readonly, &zfsvfs);
 	if (error) {
@@ -1493,7 +1523,6 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	sb->s_op = &zpl_super_operations;
 	sb->s_xattr = zpl_xattr_handlers;
 	sb->s_export_op = &zpl_export_operations;
-	sb->s_d_op = &zpl_dentry_operations;
 
 	/* Set features for file system. */
 	zfs_set_fuid_feature(zfsvfs);
@@ -1527,6 +1556,7 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	error = zfs_root(zfsvfs, &root_inode);
 	if (error) {
 		(void) zfs_umount(sb);
+		zfsvfs = NULL; /* avoid double-free; first in zfs_umount */
 		goto out;
 	}
 
@@ -1534,6 +1564,7 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 	sb->s_root = d_make_root(root_inode);
 	if (sb->s_root == NULL) {
 		(void) zfs_umount(sb);
+		zfsvfs = NULL; /* avoid double-free; first in zfs_umount */
 		error = SET_ERROR(ENOMEM);
 		goto out;
 	}
@@ -1720,7 +1751,8 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 		return (zfsctl_snapdir_vget(sb, objsetid, fid_gen, ipp));
 	}
 
-	ZFS_ENTER(zfsvfs);
+	if ((err = zfs_enter(zfsvfs, FTAG)) != 0)
+		return (err);
 	/* A zero fid_gen means we are in the .zfs control directories */
 	if (fid_gen == 0 &&
 	    (object == ZFSCTL_INO_ROOT || object == ZFSCTL_INO_SNAPDIR)) {
@@ -1736,7 +1768,7 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 			 */
 			VERIFY3P(igrab(*ipp), !=, NULL);
 		}
-		ZFS_EXIT(zfsvfs);
+		zfs_exit(zfsvfs, FTAG);
 		return (0);
 	}
 
@@ -1744,14 +1776,14 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 
 	dprintf("getting %llu [%llu mask %llx]\n", object, fid_gen, gen_mask);
 	if ((err = zfs_zget(zfsvfs, object, &zp))) {
-		ZFS_EXIT(zfsvfs);
+		zfs_exit(zfsvfs, FTAG);
 		return (err);
 	}
 
 	/* Don't export xattr stuff */
 	if (zp->z_pflags & ZFS_XATTR) {
 		zrele(zp);
-		ZFS_EXIT(zfsvfs);
+		zfs_exit(zfsvfs, FTAG);
 		return (SET_ERROR(ENOENT));
 	}
 
@@ -1766,7 +1798,7 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 		dprintf("znode gen (%llu) != fid gen (%llu)\n", zp_gen,
 		    fid_gen);
 		zrele(zp);
-		ZFS_EXIT(zfsvfs);
+		zfs_exit(zfsvfs, FTAG);
 		return (SET_ERROR(ENOENT));
 	}
 
@@ -1774,7 +1806,7 @@ zfs_vget(struct super_block *sb, struct inode **ipp, fid_t *fidp)
 	if (*ipp)
 		zfs_znode_update_vfs(ITOZ(*ipp));
 
-	ZFS_EXIT(zfsvfs);
+	zfs_exit(zfsvfs, FTAG);
 	return (0);
 }
 
@@ -1849,8 +1881,8 @@ zfs_resume_fs(zfsvfs_t *zfsvfs, dsl_dataset_t *ds)
 	    zp = list_next(&zfsvfs->z_all_znodes, zp)) {
 		err2 = zfs_rezget(zp);
 		if (err2) {
+			zpl_d_drop_aliases(ZTOI(zp));
 			remove_inode_hash(ZTOI(zp));
-			zp->z_is_stale = B_TRUE;
 		}
 
 		/* see comment in zfs_suspend_fs() */
@@ -2018,91 +2050,6 @@ zfs_set_version(zfsvfs_t *zfsvfs, uint64_t newvers)
 	zfs_set_fuid_feature(zfsvfs);
 
 	return (0);
-}
-
-/*
- * Read a property stored within the master node.
- */
-int
-zfs_get_zplprop(objset_t *os, zfs_prop_t prop, uint64_t *value)
-{
-	uint64_t *cached_copy = NULL;
-
-	/*
-	 * Figure out where in the objset_t the cached copy would live, if it
-	 * is available for the requested property.
-	 */
-	if (os != NULL) {
-		switch (prop) {
-		case ZFS_PROP_VERSION:
-			cached_copy = &os->os_version;
-			break;
-		case ZFS_PROP_NORMALIZE:
-			cached_copy = &os->os_normalization;
-			break;
-		case ZFS_PROP_UTF8ONLY:
-			cached_copy = &os->os_utf8only;
-			break;
-		case ZFS_PROP_CASE:
-			cached_copy = &os->os_casesensitivity;
-			break;
-		default:
-			break;
-		}
-	}
-	if (cached_copy != NULL && *cached_copy != OBJSET_PROP_UNINITIALIZED) {
-		*value = *cached_copy;
-		return (0);
-	}
-
-	/*
-	 * If the property wasn't cached, look up the file system's value for
-	 * the property. For the version property, we look up a slightly
-	 * different string.
-	 */
-	const char *pname;
-	int error = ENOENT;
-	if (prop == ZFS_PROP_VERSION)
-		pname = ZPL_VERSION_STR;
-	else
-		pname = zfs_prop_to_name(prop);
-
-	if (os != NULL) {
-		ASSERT3U(os->os_phys->os_type, ==, DMU_OST_ZFS);
-		error = zap_lookup(os, MASTER_NODE_OBJ, pname, 8, 1, value);
-	}
-
-	if (error == ENOENT) {
-		/* No value set, use the default value */
-		switch (prop) {
-		case ZFS_PROP_VERSION:
-			*value = ZPL_VERSION;
-			break;
-		case ZFS_PROP_NORMALIZE:
-		case ZFS_PROP_UTF8ONLY:
-			*value = 0;
-			break;
-		case ZFS_PROP_CASE:
-			*value = ZFS_CASE_SENSITIVE;
-			break;
-		case ZFS_PROP_ACLTYPE:
-			*value = ZFS_ACLTYPE_OFF;
-			break;
-		default:
-			return (error);
-		}
-		error = 0;
-	}
-
-	/*
-	 * If one of the methods for getting the property value above worked,
-	 * copy it into the objset_t's cache.
-	 */
-	if (error == 0 && cached_copy != NULL) {
-		*cached_copy = *value;
-	}
-
-	return (error);
 }
 
 /*

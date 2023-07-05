@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2020 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2022 by Delphix. All rights reserved.
  * Copyright Joyent, Inc.
  * Copyright (c) 2013 Steven Hartland. All rights reserved.
  * Copyright (c) 2016, Intel Corporation.
@@ -35,14 +35,13 @@
 #define	_LIBZFS_H extern __attribute__((visibility("default")))
 
 #include <assert.h>
+#include <libshare.h>
 #include <libnvpair.h>
 #include <sys/mnttab.h>
 #include <sys/param.h>
 #include <sys/types.h>
-#include <sys/varargs.h>
 #include <sys/fs/zfs.h>
 #include <sys/avl.h>
-#include <ucred.h>
 #include <libzfs_core.h>
 
 #ifdef	__cplusplus
@@ -126,11 +125,14 @@ typedef enum zfs_error {
 	EZFS_THREADCREATEFAILED, /* thread create failed */
 	EZFS_POSTSPLIT_ONLINE,	/* onlining a disk after splitting it */
 	EZFS_SCRUBBING,		/* currently scrubbing */
+	EZFS_ERRORSCRUBBING,	/* currently error scrubbing */
+	EZFS_ERRORSCRUB_PAUSED,	/* error scrub currently paused */
 	EZFS_NO_SCRUB,		/* no active scrub */
 	EZFS_DIFF,		/* general failure of zfs diff */
 	EZFS_DIFFDATA,		/* bad zfs diff data */
 	EZFS_POOLREADONLY,	/* pool is in read-only mode */
 	EZFS_SCRUB_PAUSED,	/* scrub currently paused */
+	EZFS_SCRUB_PAUSED_TO_CANCEL,	/* scrub currently paused */
 	EZFS_ACTIVE_POOL,	/* pool is imported on a different system */
 	EZFS_CRYPTOFAILED,	/* failed to setup encryption */
 	EZFS_NO_PENDING,	/* cannot cancel, no operation is pending */
@@ -151,6 +153,9 @@ typedef enum zfs_error {
 	EZFS_EXPORT_IN_PROGRESS,	/* currently exporting the pool */
 	EZFS_REBUILDING,	/* resilvering (sequential reconstrution) */
 	EZFS_VDEV_NOTSUP,	/* ops not supported for this type of vdev */
+	EZFS_NOT_USER_NAMESPACE,	/* a file is not a user namespace */
+	EZFS_CKSUM,		/* insufficient replicas */
+	EZFS_RESUME_EXISTS,	/* Resume on existing dataset without force */
 	EZFS_UNKNOWN
 } zfs_error_t;
 
@@ -258,10 +263,10 @@ _LIBZFS_H int zpool_add(zpool_handle_t *, nvlist_t *);
 
 typedef struct splitflags {
 	/* do not split, but return the config that would be split off */
-	int dryrun : 1;
+	unsigned int dryrun : 1;
 
 	/* after splitting, import the pool */
-	int import : 1;
+	unsigned int import : 1;
 	int name_flags;
 } splitflags_t;
 
@@ -308,6 +313,7 @@ _LIBZFS_H int zpool_vdev_indirect_size(zpool_handle_t *, const char *,
     uint64_t *);
 _LIBZFS_H int zpool_vdev_split(zpool_handle_t *, char *, nvlist_t **,
     nvlist_t *, splitflags_t);
+_LIBZFS_H int zpool_vdev_remove_wanted(zpool_handle_t *, const char *);
 
 _LIBZFS_H int zpool_vdev_fault(zpool_handle_t *, uint64_t, vdev_aux_t);
 _LIBZFS_H int zpool_vdev_degrade(zpool_handle_t *, uint64_t, vdev_aux_t);
@@ -330,6 +336,8 @@ _LIBZFS_H const char *zpool_get_state_str(zpool_handle_t *);
 _LIBZFS_H int zpool_set_prop(zpool_handle_t *, const char *, const char *);
 _LIBZFS_H int zpool_get_prop(zpool_handle_t *, zpool_prop_t, char *,
     size_t proplen, zprop_source_t *, boolean_t literal);
+_LIBZFS_H int zpool_get_userprop(zpool_handle_t *, const char *, char *,
+    size_t proplen, zprop_source_t *);
 _LIBZFS_H uint64_t zpool_get_prop_int(zpool_handle_t *, zpool_prop_t,
     zprop_source_t *);
 _LIBZFS_H int zpool_props_refresh(zpool_handle_t *);
@@ -423,9 +431,9 @@ typedef enum {
 	ZPOOL_STATUS_OK
 } zpool_status_t;
 
-_LIBZFS_H zpool_status_t zpool_get_status(zpool_handle_t *, char **,
+_LIBZFS_H zpool_status_t zpool_get_status(zpool_handle_t *, const char **,
     zpool_errata_t *);
-_LIBZFS_H zpool_status_t zpool_import_status(nvlist_t *, char **,
+_LIBZFS_H zpool_status_t zpool_import_status(nvlist_t *, const char **,
     zpool_errata_t *);
 
 /*
@@ -475,7 +483,6 @@ _LIBZFS_H void zpool_obj_to_path_ds(zpool_handle_t *, uint64_t, uint64_t,
 _LIBZFS_H void zpool_obj_to_path(zpool_handle_t *, uint64_t, uint64_t, char *,
     size_t);
 _LIBZFS_H int zfs_ioctl(libzfs_handle_t *, int, struct zfs_cmd *);
-_LIBZFS_H int zpool_get_physpath(zpool_handle_t *, char *, size_t);
 _LIBZFS_H void zpool_explain_recover(libzfs_handle_t *, const char *, int,
     nvlist_t *);
 _LIBZFS_H int zpool_checkpoint(zpool_handle_t *);
@@ -531,7 +538,7 @@ _LIBZFS_H int zfs_prop_get_written(zfs_handle_t *zhp, const char *propname,
     char *propbuf, int proplen, boolean_t literal);
 _LIBZFS_H int zfs_prop_get_feature(zfs_handle_t *zhp, const char *propname,
     char *buf, size_t len);
-_LIBZFS_H uint64_t getprop_uint64(zfs_handle_t *, zfs_prop_t, char **);
+_LIBZFS_H uint64_t getprop_uint64(zfs_handle_t *, zfs_prop_t, const char **);
 _LIBZFS_H uint64_t zfs_prop_get_int(zfs_handle_t *, zfs_prop_t);
 _LIBZFS_H int zfs_prop_inherit(zfs_handle_t *, const char *, boolean_t);
 _LIBZFS_H const char *zfs_prop_values(zfs_prop_t);
@@ -644,6 +651,14 @@ _LIBZFS_H void zprop_print_one_property(const char *, zprop_get_cbdata_t *,
 /*
  * Iterator functions.
  */
+#define	ZFS_ITER_RECURSE		(1 << 0)
+#define	ZFS_ITER_ARGS_CAN_BE_PATHS	(1 << 1)
+#define	ZFS_ITER_PROP_LISTSNAPS		(1 << 2)
+#define	ZFS_ITER_DEPTH_LIMIT		(1 << 3)
+#define	ZFS_ITER_RECVD_PROPS		(1 << 4)
+#define	ZFS_ITER_LITERAL_PROPS		(1 << 5)
+#define	ZFS_ITER_SIMPLE			(1 << 6)
+
 typedef int (*zfs_iter_f)(zfs_handle_t *, void *);
 _LIBZFS_H int zfs_iter_root(libzfs_handle_t *, zfs_iter_f, void *);
 _LIBZFS_H int zfs_iter_children(zfs_handle_t *, zfs_iter_f, void *);
@@ -657,6 +672,18 @@ _LIBZFS_H int zfs_iter_snapshots_sorted(zfs_handle_t *, zfs_iter_f, void *,
 _LIBZFS_H int zfs_iter_snapspec(zfs_handle_t *, const char *, zfs_iter_f,
     void *);
 _LIBZFS_H int zfs_iter_bookmarks(zfs_handle_t *, zfs_iter_f, void *);
+
+_LIBZFS_H int zfs_iter_children_v2(zfs_handle_t *, int, zfs_iter_f, void *);
+_LIBZFS_H int zfs_iter_dependents_v2(zfs_handle_t *, int, boolean_t, zfs_iter_f,
+    void *);
+_LIBZFS_H int zfs_iter_filesystems_v2(zfs_handle_t *, int, zfs_iter_f, void *);
+_LIBZFS_H int zfs_iter_snapshots_v2(zfs_handle_t *, int, zfs_iter_f, void *,
+    uint64_t, uint64_t);
+_LIBZFS_H int zfs_iter_snapshots_sorted_v2(zfs_handle_t *, int, zfs_iter_f,
+    void *, uint64_t, uint64_t);
+_LIBZFS_H int zfs_iter_snapspec_v2(zfs_handle_t *, int, const char *,
+    zfs_iter_f, void *);
+_LIBZFS_H int zfs_iter_bookmarks_v2(zfs_handle_t *, int, zfs_iter_f, void *);
 _LIBZFS_H int zfs_iter_mounted(zfs_handle_t *, zfs_iter_f, void *);
 
 typedef struct get_all_cb {
@@ -688,13 +715,13 @@ _LIBZFS_H int zfs_rollback(zfs_handle_t *, zfs_handle_t *, boolean_t);
 
 typedef struct renameflags {
 	/* recursive rename */
-	int recursive : 1;
+	unsigned int recursive : 1;
 
 	/* don't unmount file systems */
-	int nounmount : 1;
+	unsigned int nounmount : 1;
 
 	/* force unmount file systems */
-	int forceunmount : 1;
+	unsigned int forceunmount : 1;
 } renameflags_t;
 
 _LIBZFS_H int zfs_rename(zfs_handle_t *, const char *, renameflags_t);
@@ -729,6 +756,9 @@ typedef struct sendflags {
 
 	/* show progress (ie. -v) */
 	boolean_t progress;
+
+	/* show progress as process title (ie. -V) */
+	boolean_t progressastitle;
 
 	/* large blocks (>128K) are permitted */
 	boolean_t largeblock;
@@ -829,6 +859,9 @@ typedef struct recvflags {
 
 	/* force unmount while recv snapshot (private) */
 	boolean_t forceunmount;
+
+	/* use this recv to check (and heal if needed) an existing snapshot */
+	boolean_t heal;
 } recvflags_t;
 
 _LIBZFS_H int zfs_receive(libzfs_handle_t *, const char *, nvlist_t *,
@@ -870,45 +903,35 @@ _LIBZFS_H int zfs_unmountall(zfs_handle_t *, int);
 _LIBZFS_H int zfs_mount_delegation_check(void);
 
 #if defined(__linux__) || defined(__APPLE__)
-_LIBZFS_H int zfs_parse_mount_options(char *mntopts, unsigned long *mntflags,
-    unsigned long *zfsflags, int sloppy, char *badopt, char *mtabopt);
+_LIBZFS_H int zfs_parse_mount_options(const char *mntopts,
+    unsigned long *mntflags, unsigned long *zfsflags, int sloppy, char *badopt,
+    char *mtabopt);
 _LIBZFS_H void zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
     char *mntopts, char *mtabopt);
 #endif
 
 /*
  * Share support functions.
+ *
+ * enum sa_protocol * lists are terminated with SA_NO_PROTOCOL,
+ * NULL means "all/any known to this libzfs".
  */
-_LIBZFS_H boolean_t zfs_is_shared(zfs_handle_t *);
-_LIBZFS_H int zfs_share(zfs_handle_t *);
-_LIBZFS_H int zfs_unshare(zfs_handle_t *);
+#define	SA_NO_PROTOCOL -1
 
-/*
- * Protocol-specific share support functions.
- */
-_LIBZFS_H boolean_t zfs_is_shared_nfs(zfs_handle_t *, char **);
-_LIBZFS_H boolean_t zfs_is_shared_smb(zfs_handle_t *, char **);
-_LIBZFS_H int zfs_share_nfs(zfs_handle_t *);
-_LIBZFS_H int zfs_share_smb(zfs_handle_t *);
-_LIBZFS_H int zfs_shareall(zfs_handle_t *);
-_LIBZFS_H int zfs_unshare_nfs(zfs_handle_t *, const char *);
-_LIBZFS_H int zfs_unshare_smb(zfs_handle_t *, const char *);
-_LIBZFS_H int zfs_unshareall_nfs(zfs_handle_t *);
-_LIBZFS_H int zfs_unshareall_smb(zfs_handle_t *);
-_LIBZFS_H int zfs_unshareall_bypath(zfs_handle_t *, const char *);
-_LIBZFS_H int zfs_unshareall_bytype(zfs_handle_t *, const char *, const char *);
-_LIBZFS_H int zfs_unshareall(zfs_handle_t *);
-_LIBZFS_H int zfs_deleg_share_nfs(libzfs_handle_t *, char *, char *, char *,
-    void *, void *, int, zfs_share_op_t);
-_LIBZFS_H void zfs_commit_nfs_shares(void);
-_LIBZFS_H void zfs_commit_smb_shares(void);
-_LIBZFS_H void zfs_commit_all_shares(void);
-_LIBZFS_H void zfs_commit_shares(const char *);
+_LIBZFS_H boolean_t zfs_is_shared(zfs_handle_t *zhp, char **where,
+    const enum sa_protocol *proto);
+_LIBZFS_H int zfs_share(zfs_handle_t *zhp, const enum sa_protocol *proto);
+_LIBZFS_H int zfs_unshare(zfs_handle_t *zhp, const char *mountpoint,
+    const enum sa_protocol *proto);
+_LIBZFS_H int zfs_unshareall(zfs_handle_t *zhp,
+    const enum sa_protocol *proto);
+_LIBZFS_H void zfs_commit_shares(const enum sa_protocol *proto);
+_LIBZFS_H void zfs_truncate_shares(const enum sa_protocol *proto);
 
 _LIBZFS_H int zfs_nicestrtonum(libzfs_handle_t *, const char *, uint64_t *);
 
 /*
- * Utility functions to run an _LIBZFS_Hal process.
+ * Utility functions to run an external process.
  */
 #define	STDOUT_VERBOSE	0x01
 #define	STDERR_VERBOSE	0x02
@@ -922,13 +945,13 @@ _LIBZFS_H int libzfs_run_process_get_stdout_nopath(const char *, char *[],
 
 _LIBZFS_H void libzfs_free_str_array(char **, int);
 
-_LIBZFS_H int libzfs_envvar_is_set(char *);
+_LIBZFS_H boolean_t libzfs_envvar_is_set(const char *);
 
 /*
  * Utility functions for zfs version
  */
-_LIBZFS_H void zfs_version_userland(char *, int);
-_LIBZFS_H int zfs_version_kernel(char *, int);
+_LIBZFS_H const char *zfs_version_userland(void);
+_LIBZFS_H char *zfs_version_kernel(void);
 _LIBZFS_H int zfs_version_print(void);
 
 /*
@@ -991,6 +1014,15 @@ _LIBZFS_H int zpool_nextboot(libzfs_handle_t *, uint64_t, uint64_t,
     const char *);
 
 #endif /* __FreeBSD__ */
+
+#ifdef __linux__
+
+/*
+ * Add or delete the given filesystem to/from the given user namespace.
+ */
+_LIBZFS_H int zfs_userns(zfs_handle_t *zhp, const char *nspath, int attach);
+
+#endif
 
 #ifdef	__cplusplus
 }

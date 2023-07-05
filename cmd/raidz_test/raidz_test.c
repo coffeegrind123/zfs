@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -69,7 +69,7 @@ static void sig_handler(int signo)
 
 static void print_opts(raidz_test_opts_t *opts, boolean_t force)
 {
-	char *verbose;
+	const char *verbose;
 	switch (opts->rto_v) {
 		case D_ALL:
 			verbose = "no";
@@ -146,8 +146,6 @@ static void process_options(int argc, char **argv)
 	memcpy(o, &rto_opts_defaults, sizeof (*o));
 
 	while ((opt = getopt(argc, argv, "TDBSvha:er:o:d:s:t:")) != -1) {
-		value = 0;
-
 		switch (opt) {
 		case 'a':
 			value = strtoull(optarg, NULL, 0);
@@ -939,7 +937,7 @@ run_sweep(void)
 		opts = umem_zalloc(sizeof (raidz_test_opts_t), UMEM_NOFAIL);
 		opts->rto_ashift = ashift_v[a];
 		opts->rto_dcols = dcols_v[d];
-		opts->rto_offset = (1 << ashift_v[a]) * rand();
+		opts->rto_offset = (1ULL << ashift_v[a]) * rand();
 		opts->rto_dsize = size_v[s];
 		opts->rto_expand = rto_opts.rto_expand;
 		opts->rto_expand_offset = rto_opts.rto_expand_offset;

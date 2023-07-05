@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -34,6 +34,11 @@
 #include <linux/hdreg.h>
 #include <linux/major.h>
 #include <linux/msdos_fs.h>	/* for SECTOR_* */
+#include <linux/bio.h>
+
+#ifdef HAVE_BLK_MQ
+#include <linux/blk-mq.h>
+#endif
 
 #ifndef HAVE_BLK_QUEUE_FLAG_SET
 static inline void
@@ -121,7 +126,8 @@ typedef int bvec_iterator_t;
 #endif
 
 static inline void
-bio_set_flags_failfast(struct block_device *bdev, int *flags)
+bio_set_flags_failfast(struct block_device *bdev, int *flags, bool dev,
+    bool transport, bool driver)
 {
 #ifdef CONFIG_BUG
 	/*
@@ -143,7 +149,12 @@ bio_set_flags_failfast(struct block_device *bdev, int *flags)
 #endif /* BLOCK_EXT_MAJOR */
 #endif /* CONFIG_BUG */
 
-	*flags |= REQ_FAILFAST_MASK;
+	if (dev)
+		*flags |= REQ_FAILFAST_DEV;
+	if (transport)
+		*flags |= REQ_FAILFAST_TRANSPORT;
+	if (driver)
+		*flags |= REQ_FAILFAST_DRIVER;
 }
 
 /*
@@ -257,6 +268,32 @@ bio_set_bi_error(struct bio *bio, int error)
 #endif /* HAVE_1ARG_BIO_END_IO_T */
 
 /*
+ * 5.15 MACRO,
+ *   GD_DEAD
+ *
+ * 2.6.36 - 5.14 MACRO,
+ *   GENHD_FL_UP
+ *
+ * Check the disk status and return B_TRUE if alive
+ * otherwise B_FALSE
+ */
+static inline boolean_t
+zfs_check_disk_status(struct block_device *bdev)
+{
+#if defined(GENHD_FL_UP)
+	return (!!(bdev->bd_disk->flags & GENHD_FL_UP));
+#elif defined(GD_DEAD)
+	return (!test_bit(GD_DEAD, &bdev->bd_disk->state));
+#else
+/*
+ * This is encountered if neither GENHD_FL_UP nor GD_DEAD is available in
+ * the kernel - likely due to an MACRO change that needs to be chased down.
+ */
+#error "Unsupported kernel: no usable disk status check"
+#endif
+}
+
+/*
  * 4.1 API,
  * 3.10.0 CentOS 7.x API,
  *   blkdev_reread_part()
@@ -357,7 +394,11 @@ vdev_lookup_bdev(const char *path, dev_t *dev)
 static inline void
 bio_set_op_attrs(struct bio *bio, unsigned rw, unsigned flags)
 {
+#if defined(HAVE_BIO_BI_OPF)
+	bio->bi_opf = rw | flags;
+#else
 	bio->bi_rw |= rw | flags;
+#endif /* HAVE_BIO_BI_OPF */
 }
 #endif
 
@@ -385,7 +426,7 @@ static inline void
 bio_set_flush(struct bio *bio)
 {
 #if defined(HAVE_REQ_PREFLUSH)	/* >= 4.10 */
-	bio_set_op_attrs(bio, 0, REQ_PREFLUSH);
+	bio_set_op_attrs(bio, 0, REQ_PREFLUSH | REQ_OP_WRITE);
 #elif defined(WRITE_FLUSH_FUA)	/* >= 2.6.37 and <= 4.9 */
 	bio_set_op_attrs(bio, 0, WRITE_FLUSH_FUA);
 #else
@@ -495,21 +536,45 @@ blk_queue_discard_granularity(struct request_queue *q, unsigned int dg)
 }
 
 /*
+ * 5.19 API,
+ *   bdev_max_discard_sectors()
+ *
+ * 2.6.32 API,
+ *   blk_queue_discard()
+ */
+static inline boolean_t
+bdev_discard_supported(struct block_device *bdev)
+{
+#if defined(HAVE_BDEV_MAX_DISCARD_SECTORS)
+	return (!!bdev_max_discard_sectors(bdev));
+#elif defined(HAVE_BLK_QUEUE_DISCARD)
+	return (!!blk_queue_discard(bdev_get_queue(bdev)));
+#else
+#error "Unsupported kernel"
+#endif
+}
+
+/*
+ * 5.19 API,
+ *   bdev_max_secure_erase_sectors()
+ *
  * 4.8 API,
  *   blk_queue_secure_erase()
  *
  * 2.6.36 - 4.7 API,
  *   blk_queue_secdiscard()
  */
-static inline int
-blk_queue_discard_secure(struct request_queue *q)
+static inline boolean_t
+bdev_secure_discard_supported(struct block_device *bdev)
 {
-#if defined(HAVE_BLK_QUEUE_SECURE_ERASE)
-	return (blk_queue_secure_erase(q));
+#if defined(HAVE_BDEV_MAX_SECURE_ERASE_SECTORS)
+	return (!!bdev_max_secure_erase_sectors(bdev));
+#elif defined(HAVE_BLK_QUEUE_SECURE_ERASE)
+	return (!!blk_queue_secure_erase(bdev_get_queue(bdev)));
 #elif defined(HAVE_BLK_QUEUE_SECDISCARD)
-	return (blk_queue_secdiscard(q));
+	return (!!blk_queue_secdiscard(bdev_get_queue(bdev)));
 #else
-	return (0);
+#error "Unsupported kernel"
 #endif
 }
 
@@ -527,7 +592,13 @@ blk_generic_start_io_acct(struct request_queue *q __attribute__((unused)),
     struct gendisk *disk __attribute__((unused)),
     int rw __attribute__((unused)), struct bio *bio)
 {
-#if defined(HAVE_DISK_IO_ACCT)
+#if defined(HAVE_BDEV_IO_ACCT_63)
+	return (bdev_start_io_acct(bio->bi_bdev, bio_op(bio),
+	    jiffies));
+#elif defined(HAVE_BDEV_IO_ACCT_OLD)
+	return (bdev_start_io_acct(bio->bi_bdev, bio_sectors(bio),
+	    bio_op(bio), jiffies));
+#elif defined(HAVE_DISK_IO_ACCT)
 	return (disk_start_io_acct(disk, bio_sectors(bio), bio_op(bio)));
 #elif defined(HAVE_BIO_IO_ACCT)
 	return (bio_start_io_acct(bio));
@@ -550,7 +621,12 @@ blk_generic_end_io_acct(struct request_queue *q __attribute__((unused)),
     struct gendisk *disk __attribute__((unused)),
     int rw __attribute__((unused)), struct bio *bio, unsigned long start_time)
 {
-#if defined(HAVE_DISK_IO_ACCT)
+#if defined(HAVE_BDEV_IO_ACCT_63)
+	bdev_end_io_acct(bio->bi_bdev, bio_op(bio), bio_sectors(bio),
+	    start_time);
+#elif defined(HAVE_BDEV_IO_ACCT_OLD)
+	bdev_end_io_acct(bio->bi_bdev, bio_op(bio), start_time);
+#elif defined(HAVE_DISK_IO_ACCT)
 	disk_end_io_acct(disk, bio_op(bio), start_time);
 #elif defined(HAVE_BIO_IO_ACCT)
 	bio_end_io_acct(bio, start_time);
@@ -579,4 +655,110 @@ blk_generic_alloc_queue(make_request_fn make_request, int node_id)
 }
 #endif /* !HAVE_SUBMIT_BIO_IN_BLOCK_DEVICE_OPERATIONS */
 
+/*
+ * All the io_*() helper functions below can operate on a bio, or a rq, but
+ * not both.  The older submit_bio() codepath will pass a bio, and the
+ * newer blk-mq codepath will pass a rq.
+ */
+static inline int
+io_data_dir(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL) {
+		if (op_is_write(req_op(rq))) {
+			return (WRITE);
+		} else {
+			return (READ);
+		}
+	}
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_data_dir(bio));
+}
+
+static inline int
+io_is_flush(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (req_op(rq) == REQ_OP_FLUSH);
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_is_flush(bio));
+}
+
+static inline int
+io_is_discard(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (req_op(rq) == REQ_OP_DISCARD);
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_is_discard(bio));
+}
+
+static inline int
+io_is_secure_erase(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (req_op(rq) == REQ_OP_SECURE_ERASE);
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_is_secure_erase(bio));
+}
+
+static inline int
+io_is_fua(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (rq->cmd_flags & REQ_FUA);
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_is_fua(bio));
+}
+
+
+static inline uint64_t
+io_offset(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (blk_rq_pos(rq) << 9);
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (BIO_BI_SECTOR(bio) << 9);
+}
+
+static inline uint64_t
+io_size(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (blk_rq_bytes(rq));
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (BIO_BI_SIZE(bio));
+}
+
+static inline int
+io_has_data(struct bio *bio, struct request *rq)
+{
+#ifdef HAVE_BLK_MQ
+	if (rq != NULL)
+		return (bio_has_data(rq->bio));
+#else
+	ASSERT3P(rq, ==, NULL);
+#endif
+	return (bio_has_data(bio));
+}
 #endif /* _ZFS_BLKDEV_H */

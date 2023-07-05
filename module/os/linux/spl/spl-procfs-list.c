@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -23,9 +23,9 @@
  */
 
 #include <sys/list.h>
-#include <sys/mutex.h>
 #include <sys/procfs_list.h>
 #include <linux/proc_fs.h>
+#include <sys/mutex.h>
 
 /*
  * A procfs_list is a wrapper around a linked list which implements the seq_file

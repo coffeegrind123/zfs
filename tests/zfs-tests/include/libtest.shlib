@@ -6,7 +6,7 @@
 # You may not use this file except in compliance with the License.
 #
 # You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
-# or http://www.opensolaris.org/os/licensing.
+# or https://opensource.org/licenses/CDDL-1.0.
 # See the License for the specific language governing permissions
 # and limitations under the License.
 #
@@ -1110,6 +1110,18 @@ function datasetnonexists
 	return 0
 }
 
+# FreeBSD breaks exports(5) at whitespace and doesn't process escapes
+# Solaris just breaks
+#
+# cf. https://github.com/openzfs/zfs/pull/13165#issuecomment-1059845807
+#
+# Linux can have spaces (which are \OOO-escaped),
+# but can't have backslashes because they're parsed recursively
+function shares_can_have_whitespace
+{
+	is_linux
+}
+
 function is_shared_freebsd
 {
 	typeset fs=$1
@@ -1253,7 +1265,7 @@ function is_shared_smb
 	datasetexists "$fs" || return
 
 	if is_linux; then
-		net usershare list | grep -xFq "${fs//\//_}"
+		net usershare list | grep -xFq "${fs//[-\/]/_}"
 	else
 		log_note "SMB on $UNAME currently unsupported by the test framework"
 		return 1
@@ -1872,7 +1884,7 @@ function wait_hotspare_state # pool disk state timeout
 #
 # Return 0 is pool/disk matches expected state, 1 otherwise
 #
-function check_vdev_state # pool disk state{online,offline,unavail}
+function check_vdev_state # pool disk state{online,offline,unavail,removed}
 {
 	typeset pool=$1
 	typeset disk=${2#*$DEV_DSKDIR/}
@@ -1939,6 +1951,7 @@ function check_pool_status # pool token keyword <verbose>
 #	is_pool_removing - to check if the pool removing is a vdev
 #	is_pool_removed - to check if the pool remove is completed
 #	is_pool_discarding - to check if the pool checkpoint is being discarded
+#	is_pool_replacing - to check if the pool is performing a replacement
 #
 function is_pool_resilvering #pool <verbose>
 {
@@ -1956,6 +1969,12 @@ function is_pool_scrubbing #pool <verbose>
 	check_pool_status "$1" "scan" "scrub in progress since " $2
 }
 
+function is_pool_error_scrubbing #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub in progress since " $2
+	return $?
+}
+
 function is_pool_scrubbed #pool <verbose>
 {
 	check_pool_status "$1" "scan" "scrub repaired" $2
@@ -1966,9 +1985,21 @@ function is_pool_scrub_stopped #pool <verbose>
 	check_pool_status "$1" "scan" "scrub canceled" $2
 }
 
+function is_pool_error_scrub_stopped #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub canceled on " $2
+	return $?
+}
+
 function is_pool_scrub_paused #pool <verbose>
 {
 	check_pool_status "$1" "scan" "scrub paused since " $2
+}
+
+function is_pool_error_scrub_paused #pool <verbose>
+{
+	check_pool_status "$1" "scrub" "error scrub paused since " $2
+	return $?
 }
 
 function is_pool_removing #pool
@@ -1984,6 +2015,10 @@ function is_pool_removed #pool
 function is_pool_discarding #pool
 {
 	check_pool_status "$1" "checkpoint" "discarding"
+}
+function is_pool_replacing #pool
+{
+	zpool status "$1" | grep -qE 'replacing-[0-9]+'
 }
 
 function wait_for_degraded
@@ -2758,20 +2793,22 @@ function is_te_enabled
 	svcs -H -o state labeld 2>/dev/null | grep -q "enabled"
 }
 
+# Return the number of CPUs (cross-platform)
+function get_num_cpus
+{
+	if is_linux ; then
+		grep -c '^processor' /proc/cpuinfo
+	elif is_freebsd; then
+		sysctl -n kern.smp.cpus
+	else
+		psrinfo | wc -l
+	fi
+}
+
 # Utility function to determine if a system has multiple cpus.
 function is_mp
 {
-	case "$UNAME" in
-		Linux)
-			(($(grep -c '^processor' /proc/cpuinfo) > 1))
-			;;
-		FreeBSD)
-			sysctl -n kern.smp.cpus
-			;;
-		*)
-			(($(psrinfo | wc -l) > 1))
-			;;
-	esac
+	[[ $(get_num_cpus) -gt 1 ]]
 }
 
 function get_cpu_freq
@@ -2969,12 +3006,15 @@ function wait_freeing #pool
 # Wait for every device replace operation to complete
 #
 # $1 pool name
+# $2 timeout
 #
-function wait_replacing #pool
+function wait_replacing #pool timeout
 {
+	typeset timeout=${2:-300}
 	typeset pool=${1:-$TESTPOOL}
-	while zpool status $pool | grep -qE 'replacing-[0-9]+'; do
-		log_must sleep 1
+	for (( timer = 0; timer < $timeout; timer++ )); do
+		is_pool_replacing $pool || break;
+		sleep 1;
 	done
 }
 
@@ -3308,14 +3348,23 @@ function get_tunable_impl
 {
 	typeset name="$1"
 	typeset module="${2:-zfs}"
+	typeset check_only="$3"
 
 	eval "typeset tunable=\$$name"
 	case "$tunable" in
 	UNSUPPORTED)
-		log_unsupported "Tunable '$name' is unsupported on $UNAME"
+		if [ -z "$check_only" ] ; then
+			log_unsupported "Tunable '$name' is unsupported on $UNAME"
+		else
+			return 1
+		fi
 		;;
 	"")
-		log_fail "Tunable '$name' must be added to tunables.cfg"
+		if [ -z "$check_only" ] ; then
+			log_fail "Tunable '$name' must be added to tunables.cfg"
+		else
+			return 1
+		fi
 		;;
 	*)
 		;;
@@ -3333,6 +3382,14 @@ function get_tunable_impl
 		[[ "$module" -eq "zfs" ]] || return 1
 		;;
 	esac
+}
+
+# Does a tunable exist?
+#
+# $1: Tunable name
+function tunable_exists
+{
+	get_tunable_impl $1 "zfs" 1
 }
 
 #
@@ -3397,6 +3454,20 @@ function stat_size #<path>
 		;;
 	*)
 		stat -c %s "$path"
+		;;
+	esac
+}
+
+function stat_mtime #<path>
+{
+	typeset path=$1
+
+	case "$UNAME" in
+	FreeBSD)
+		stat -f %m "$path"
+		;;
+	*)
+		stat -c %Y "$path"
 		;;
 	esac
 }
@@ -3635,7 +3706,7 @@ function arcstat_quiescence # stat echo
 
 	while $do_once || [ $stat1 -ne $stat2 ] || [ $stat2 -eq 0 ]; do
 		typeset stat1=$(get_arcstat $stat)
-		sleep 2
+		sleep 0.5
 		typeset stat2=$(get_arcstat $stat)
 		do_once=false
 	done

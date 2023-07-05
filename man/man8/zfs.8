@@ -6,7 +6,7 @@
 .\" You may not use this file except in compliance with the License.
 .\"
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
-.\" or http://www.opensolaris.org/os/licensing.
+.\" or https://opensource.org/licenses/CDDL-1.0.
 .\" See the License for the specific language governing permissions
 .\" and limitations under the License.
 .\"
@@ -36,7 +36,7 @@
 .\" Copyright 2018 Nexenta Systems, Inc.
 .\" Copyright 2019 Joyent, Inc.
 .\"
-.Dd March 16, 2022
+.Dd May 12, 2022
 .Dt ZFS 8
 .Os
 .
@@ -703,8 +703,8 @@ M       F       /tank/test/modified
 .Ed
 .
 .Ss Example 23 : No Creating a bookmark
-The following example create a bookmark to a snapshot.
-This bookmark can then be used instead of snapshot in send streams.
+The following example creates a bookmark to a snapshot.
+This bookmark can then be used instead of a snapshot in send streams.
 .Dl # Nm zfs Cm bookmark Ar rpool Ns @ Ns Ar snapshot rpool Ns # Ns Ar bookmark
 .
 .Ss Example 24 : No Setting Sy sharesmb No Property Options on a ZFS File System
@@ -736,7 +736,13 @@ Do note that any changes done with the
 command will be undone if the share is ever unshared (like via a reboot).
 .
 .Sh ENVIRONMENT VARIABLES
-.Bl -tag -width "ZFS_MOUNT_HELPER"
+.Bl -tag -width "ZFS_MODULE_TIMEOUT"
+.It Sy ZFS_COLOR
+Use ANSI color in
+.Nm zfs Cm diff
+and
+.Nm zfs Cm list
+output.
 .It Sy ZFS_MOUNT_HELPER
 Cause
 .Nm zfs Cm mount
@@ -744,6 +750,28 @@ to use
 .Xr mount 8
 to mount ZFS datasets.
 This option is provided for backwards compatibility with older ZFS versions.
+.
+.It Sy ZFS_SET_PIPE_MAX
+Tells
+.Nm zfs
+to set the maximum pipe size for sends/recieves.
+Disabled by default on Linux
+due to an unfixed deadlock in Linux's pipe size handling code.
+.
+.\" Shared with zpool.8
+.It Sy ZFS_MODULE_TIMEOUT
+Time, in seconds, to wait for
+.Pa /dev/zfs
+to appear.
+Defaults to
+.Sy 10 ,
+max
+.Sy 600 Pq 10 minutes .
+If
+.Pf < Sy 0 ,
+wait forever; if
+.Sy 0 ,
+don't wait.
 .El
 .
 .Sh INTERFACE STABILITY

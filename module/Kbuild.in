@@ -28,6 +28,26 @@ ZFS_MODULE_CFLAGS += -I$(zfs_include)
 ZFS_MODULE_CPPFLAGS += -D_KERNEL
 ZFS_MODULE_CPPFLAGS += @KERNEL_DEBUG_CPPFLAGS@
 
+# KASAN enables -Werror=frame-larger-than=1024, which
+# breaks oh so many parts of our build.
+ifeq ($(CONFIG_KASAN),y)
+ZFS_MODULE_CFLAGS += -Wno-error=frame-larger-than=
+endif
+
+# Generated binary search code is particularly bad with this optimization.
+# Oddly, range_tree.c is not affected when unrolling is not done and dsl_scan.c
+# is not affected when unrolling is done.
+# Disable it until the following upstream issue is resolved:
+# https://github.com/llvm/llvm-project/issues/62790
+ifeq ($(CONFIG_X86),y)
+ifeq ($(CONFIG_CC_IS_CLANG),y)
+CFLAGS_zfs/dsl_scan.o += -mllvm -x86-cmov-converter=false
+CFLAGS_zfs/metaslab.o += -mllvm -x86-cmov-converter=false
+CFLAGS_zfs/range_tree.o += -mllvm -x86-cmov-converter=false
+CFLAGS_zfs/zap_micro.o += -mllvm -x86-cmov-converter=false
+endif
+endif
+
 ifneq ($(KBUILD_EXTMOD),)
 @CONFIG_QAT_TRUE@ZFS_MODULE_CFLAGS += -I@QAT_SRC@/include
 @CONFIG_QAT_TRUE@KBUILD_EXTRA_SYMBOLS += @QAT_SYMBOLS@
@@ -35,6 +55,12 @@ endif
 
 asflags-y := $(ZFS_MODULE_CFLAGS) $(ZFS_MODULE_CPPFLAGS)
 ccflags-y := $(ZFS_MODULE_CFLAGS) $(ZFS_MODULE_CPPFLAGS)
+
+ifeq ($(CONFIG_ARM64),y)
+CFLAGS_REMOVE_zcommon/zfs_fletcher_aarch64_neon.o += -mgeneral-regs-only
+CFLAGS_REMOVE_zfs/vdev_raidz_math_aarch64_neon.o += -mgeneral-regs-only
+CFLAGS_REMOVE_zfs/vdev_raidz_math_aarch64_neonx2.o += -mgeneral-regs-only
+endif
 
 # Suppress unused-value warnings in sparc64 architecture headers
 ccflags-$(CONFIG_SPARC64) += -Wno-unused-value
@@ -59,7 +85,8 @@ SPL_OBJS := \
 	spl-tsd.o \
 	spl-vmem.o \
 	spl-xdr.o \
-	spl-zlib.o
+	spl-zlib.o \
+	spl-zone.o
 
 spl-objs += $(addprefix os/linux/spl/,$(SPL_OBJS))
 
@@ -69,6 +96,9 @@ ICP_OBJS := \
 	algs/aes/aes_impl.o \
 	algs/aes/aes_impl_generic.o \
 	algs/aes/aes_modes.o \
+	algs/blake3/blake3.o \
+	algs/blake3/blake3_generic.o \
+	algs/blake3/blake3_impl.o \
 	algs/edonr/edonr.o \
 	algs/modes/cbc.o \
 	algs/modes/ccm.o \
@@ -77,7 +107,9 @@ ICP_OBJS := \
 	algs/modes/gcm.o \
 	algs/modes/gcm_generic.o \
 	algs/modes/modes.o \
-	algs/sha2/sha2.o \
+	algs/sha2/sha2_generic.o \
+	algs/sha2/sha256_impl.o \
+	algs/sha2/sha512_impl.o \
 	algs/skein/skein.o \
 	algs/skein/skein_block.o \
 	algs/skein/skein_iv.o \
@@ -99,36 +131,61 @@ ICP_OBJS_X86_64 := \
 	asm-x86_64/aes/aes_aesni.o \
 	asm-x86_64/aes/aes_amd64.o \
 	asm-x86_64/aes/aeskey.o \
+	asm-x86_64/blake3/blake3_avx2.o \
+	asm-x86_64/blake3/blake3_avx512.o \
+	asm-x86_64/blake3/blake3_sse2.o \
+	asm-x86_64/blake3/blake3_sse41.o \
+	asm-x86_64/sha2/sha256-x86_64.o \
+	asm-x86_64/sha2/sha512-x86_64.o \
 	asm-x86_64/modes/aesni-gcm-x86_64.o \
 	asm-x86_64/modes/gcm_pclmulqdq.o \
-	asm-x86_64/modes/ghash-x86_64.o \
-	asm-x86_64/sha2/sha256_impl.o \
-	asm-x86_64/sha2/sha512_impl.o
+	asm-x86_64/modes/ghash-x86_64.o
 
 ICP_OBJS_X86 := \
 	algs/aes/aes_impl_aesni.o \
 	algs/aes/aes_impl_x86-64.o \
 	algs/modes/gcm_pclmulqdq.o
 
+ICP_OBJS_ARM := \
+	asm-arm/sha2/sha256-armv7.o \
+	asm-arm/sha2/sha512-armv7.o
+
+ICP_OBJS_ARM64 := \
+	asm-aarch64/blake3/b3_aarch64_sse2.o \
+	asm-aarch64/blake3/b3_aarch64_sse41.o \
+	asm-aarch64/sha2/sha256-armv8.o \
+	asm-aarch64/sha2/sha512-armv8.o
+
+ICP_OBJS_PPC_PPC64 := \
+	asm-ppc64/blake3/b3_ppc64le_sse2.o \
+	asm-ppc64/blake3/b3_ppc64le_sse41.o \
+	asm-ppc64/sha2/sha256-p8.o \
+	asm-ppc64/sha2/sha512-p8.o \
+	asm-ppc64/sha2/sha256-ppc.o \
+	asm-ppc64/sha2/sha512-ppc.o
+
 zfs-objs             += $(addprefix icp/,$(ICP_OBJS))
 zfs-$(CONFIG_X86)    += $(addprefix icp/,$(ICP_OBJS_X86))
+zfs-$(CONFIG_UML_X86)+= $(addprefix icp/,$(ICP_OBJS_X86))
 zfs-$(CONFIG_X86_64) += $(addprefix icp/,$(ICP_OBJS_X86_64))
+zfs-$(CONFIG_ARM)    += $(addprefix icp/,$(ICP_OBJS_ARM))
+zfs-$(CONFIG_ARM64)  += $(addprefix icp/,$(ICP_OBJS_ARM64))
+zfs-$(CONFIG_PPC)    += $(addprefix icp/,$(ICP_OBJS_PPC_PPC64))
+zfs-$(CONFIG_PPC64)  += $(addprefix icp/,$(ICP_OBJS_PPC_PPC64))
 
-$(addprefix $(obj)/icp/,$(ICP_OBJS) $(ICP_OBJS_X86) $(ICP_OBJS_X86_64)) : asflags-y += -I$(icp_include)
-$(addprefix $(obj)/icp/,$(ICP_OBJS) $(ICP_OBJS_X86) $(ICP_OBJS_X86_64)) : ccflags-y += -I$(icp_include)
+$(addprefix $(obj)/icp/,$(ICP_OBJS) $(ICP_OBJS_X86) $(ICP_OBJS_X86_64) \
+	$(ICP_OBJS_ARM64) $(ICP_OBJS_PPC_PPC64)) : asflags-y += -I$(icp_include) -I$(zfs_include)/os/linux/spl -I$(zfs_include)
 
-# Suppress objtool "can't find jump dest instruction at" warnings.  They
-# are caused by the constants which are defined in the text section of the
-# assembly file using .byte instructions (e.g. bswap_mask).  The objtool
-# utility tries to interpret them as opcodes and obviously fails doing so.
+$(addprefix $(obj)/icp/,$(ICP_OBJS) $(ICP_OBJS_X86) $(ICP_OBJS_X86_64) \
+	$(ICP_OBJS_ARM64) $(ICP_OBJS_PPC_PPC64)) : ccflags-y += -I$(icp_include) -I$(zfs_include)/os/linux/spl -I$(zfs_include)
+
+# Suppress objtool "return with modified stack frame" warnings.
 OBJECT_FILES_NON_STANDARD_aesni-gcm-x86_64.o := y
-OBJECT_FILES_NON_STANDARD_ghash-x86_64.o := y
-# Suppress objtool "unsupported stack pointer realignment" warnings. We are
-# not using a DRAP register while aligning the stack to a 64 byte boundary.
-# See #6950 for the reasoning.
-OBJECT_FILES_NON_STANDARD_sha256_impl.o := y
-OBJECT_FILES_NON_STANDARD_sha512_impl.o := y
 
+# Suppress objtool "unsupported stack pointer realignment" warnings.
+# See #6950 for the reasoning.
+OBJECT_FILES_NON_STANDARD_sha256-x86_64.o := y
+OBJECT_FILES_NON_STANDARD_sha512-x86_64.o := y
 
 LUA_OBJS := \
 	lapi.o \
@@ -199,6 +256,7 @@ ZCOMMON_OBJS_ARM64 := \
 
 zfs-objs            += $(addprefix zcommon/,$(ZCOMMON_OBJS))
 zfs-$(CONFIG_X86)   += $(addprefix zcommon/,$(ZCOMMON_OBJS_X86))
+zfs-$(CONFIG_UML_X86)+= $(addprefix zcommon/,$(ZCOMMON_OBJS_X86))
 zfs-$(CONFIG_ARM64) += $(addprefix zcommon/,$(ZCOMMON_OBJS_ARM64))
 
 
@@ -255,11 +313,13 @@ ZFS_OBJS := \
 	abd.o \
 	aggsum.o \
 	arc.o \
+	blake3_zfs.o \
 	blkptr.o \
 	bplist.o \
 	bpobj.o \
 	bptree.o \
 	bqueue.o \
+	brt.o \
 	btree.o \
 	dataset_kstats.o \
 	dbuf.o \
@@ -306,10 +366,9 @@ ZFS_OBJS := \
 	refcount.o \
 	rrwlock.o \
 	sa.o \
-	sha256.o \
+	sha2_zfs.o \
 	skein_zfs.o \
 	spa.o \
-	spa_boot.o \
 	spa_checkpoint.o \
 	spa_config.o \
 	spa_errlog.o \
@@ -323,7 +382,6 @@ ZFS_OBJS := \
 	uberblock.o \
 	unique.o \
 	vdev.o \
-	vdev_cache.o \
 	vdev_draid.o \
 	vdev_draid_rand.o \
 	vdev_indirect.o \
@@ -352,8 +410,10 @@ ZFS_OBJS := \
 	zcp_synctask.o \
 	zfeature.o \
 	zfs_byteswap.o \
+	zfs_chksum.o \
 	zfs_fm.o \
 	zfs_fuid.o \
+	zfs_impl.o \
 	zfs_ioctl.o \
 	zfs_log.o \
 	zfs_onexit.o \
@@ -422,6 +482,7 @@ ZFS_OBJS_PPC_PPC64 := \
 
 zfs-objs            += $(addprefix zfs/,$(ZFS_OBJS)) $(addprefix os/linux/zfs/,$(ZFS_OBJS_OS))
 zfs-$(CONFIG_X86)   += $(addprefix zfs/,$(ZFS_OBJS_X86))
+zfs-$(CONFIG_UML_X86)+= $(addprefix zfs/,$(ZFS_OBJS_X86))
 zfs-$(CONFIG_ARM64) += $(addprefix zfs/,$(ZFS_OBJS_ARM64))
 zfs-$(CONFIG_PPC)   += $(addprefix zfs/,$(ZFS_OBJS_PPC_PPC64))
 zfs-$(CONFIG_PPC64) += $(addprefix zfs/,$(ZFS_OBJS_PPC_PPC64))

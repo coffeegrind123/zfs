@@ -6,7 +6,7 @@
 .\" You may not use this file except in compliance with the License.
 .\"
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
-.\" or http://www.opensolaris.org/os/licensing.
+.\" or https://opensource.org/licenses/CDDL-1.0.
 .\" See the License for the specific language governing permissions
 .\" and limitations under the License.
 .\"
@@ -98,7 +98,8 @@ This is the number of I/O operations that didn't complete in
 .Sy zio_slow_io_ms
 milliseconds
 .Pq Sy 30000 No by default .
-This does not necessarily mean the I/O operations failed to complete, just took an
+This does not necessarily mean the I/O operations failed to complete, just took
+an
 unreasonably long amount of time.
 This may indicate a problem with the underlying storage.
 .It Fl t
@@ -118,6 +119,9 @@ See
 .It Fl v
 Displays verbose data error information, printing out a complete list of all
 data errors since the last complete pool scrub.
+If the head_errlog feature is enabled and files containing errors have been
+removed then the respective filenames will not be reported in subsequent runs
+of this command.
 .It Fl x
 Only display status for pools that are exhibiting errors or are otherwise
 unavailable.

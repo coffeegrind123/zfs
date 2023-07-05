@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -23,17 +23,9 @@
  * Copyright (c) 1992, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 
-
-#define	ENTRY(x) \
-	.text; \
-	.align	8; \
-	.globl	x; \
-	.type	x, @function; \
-x:
-
-#define	SET_SIZE(x) \
-	.size	x, [.-x]
-
+#if defined(_KERNEL) && defined(__linux__)
+#include <linux/linkage.h>
+#endif
 
 /*
  * Setjmp and longjmp implement non-local gotos using state vectors
@@ -41,7 +33,10 @@ x:
  */
 #ifdef __x86_64__
 
-	ENTRY(setjmp)
+#define _ASM
+#include <sys/asm_linkage.h>
+
+ENTRY_ALIGN(setjmp, 8)
 	movq	%rsp, 0(%rdi)
 	movq	%rbp, 8(%rdi)
 	movq	%rbx, 16(%rdi)
@@ -52,10 +47,10 @@ x:
 	movq	0(%rsp), %rdx		/* return address */
 	movq	%rdx, 56(%rdi)		/* rip */
 	xorl	%eax, %eax		/* return 0 */
-	ret
+	RET
 	SET_SIZE(setjmp)
 
-	ENTRY(longjmp)
+ENTRY_ALIGN(longjmp, 8)
 	movq	0(%rdi), %rsp
 	movq	8(%rdi), %rbp
 	movq	16(%rdi), %rbx
@@ -67,7 +62,7 @@ x:
 	movq	%rdx, 0(%rsp)
 	xorl	%eax, %eax
 	incl	%eax			/* return 1 */
-	ret
+	RET
 	SET_SIZE(longjmp)
 
 #ifdef __ELF__

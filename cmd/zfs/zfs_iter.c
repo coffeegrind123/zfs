@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -143,19 +143,20 @@ zfs_callback(zfs_handle_t *zhp, void *data)
 		    (cb->cb_types &
 		    (ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME))) &&
 		    zfs_get_type(zhp) == ZFS_TYPE_FILESYSTEM) {
-			(void) zfs_iter_filesystems(zhp, zfs_callback, data);
+			(void) zfs_iter_filesystems_v2(zhp, cb->cb_flags,
+			    zfs_callback, data);
 		}
 
 		if (((zfs_get_type(zhp) & (ZFS_TYPE_SNAPSHOT |
 		    ZFS_TYPE_BOOKMARK)) == 0) && include_snaps) {
-			(void) zfs_iter_snapshots(zhp,
-			    (cb->cb_flags & ZFS_ITER_SIMPLE) != 0,
+			(void) zfs_iter_snapshots_v2(zhp, cb->cb_flags,
 			    zfs_callback, data, 0, 0);
 		}
 
 		if (((zfs_get_type(zhp) & (ZFS_TYPE_SNAPSHOT |
 		    ZFS_TYPE_BOOKMARK)) == 0) && include_bmarks) {
-			(void) zfs_iter_bookmarks(zhp, zfs_callback, data);
+			(void) zfs_iter_bookmarks_v2(zhp, cb->cb_flags,
+			    zfs_callback, data);
 		}
 
 		cb->cb_depth--;
@@ -174,7 +175,7 @@ zfs_add_sort_column(zfs_sort_column_t **sc, const char *name,
 	zfs_sort_column_t *col;
 	zfs_prop_t prop;
 
-	if ((prop = zfs_name_to_prop(name)) == ZPROP_INVAL &&
+	if ((prop = zfs_name_to_prop(name)) == ZPROP_USERPROP &&
 	    !zfs_prop_user(name))
 		return (-1);
 
@@ -182,7 +183,7 @@ zfs_add_sort_column(zfs_sort_column_t **sc, const char *name,
 
 	col->sc_prop = prop;
 	col->sc_reverse = reverse;
-	if (prop == ZPROP_INVAL) {
+	if (prop == ZPROP_USERPROP) {
 		col->sc_user_prop = safe_malloc(strlen(name) + 1);
 		(void) strcpy(col->sc_user_prop, name);
 	}
@@ -211,11 +212,58 @@ zfs_free_sort_columns(zfs_sort_column_t *sc)
 	}
 }
 
-int
-zfs_sort_only_by_name(const zfs_sort_column_t *sc)
+/*
+ * Return true if all of the properties to be sorted are populated by
+ * dsl_dataset_fast_stat(). Note that sc == NULL (no sort) means we
+ * don't need any extra properties, so returns true.
+ */
+boolean_t
+zfs_sort_only_by_fast(const zfs_sort_column_t *sc)
 {
-	return (sc != NULL && sc->sc_next == NULL &&
-	    sc->sc_prop == ZFS_PROP_NAME);
+	while (sc != NULL) {
+		switch (sc->sc_prop) {
+		case ZFS_PROP_NAME:
+		case ZFS_PROP_GUID:
+		case ZFS_PROP_CREATETXG:
+		case ZFS_PROP_NUMCLONES:
+		case ZFS_PROP_INCONSISTENT:
+		case ZFS_PROP_REDACTED:
+		case ZFS_PROP_ORIGIN:
+			break;
+		default:
+			return (B_FALSE);
+		}
+		sc = sc->sc_next;
+	}
+
+	return (B_TRUE);
+}
+
+boolean_t
+zfs_list_only_by_fast(const zprop_list_t *p)
+{
+	if (p == NULL) {
+		/* NULL means 'all' so we can't use simple mode */
+		return (B_FALSE);
+	}
+
+	while (p != NULL) {
+		switch (p->pl_prop) {
+		case ZFS_PROP_NAME:
+		case ZFS_PROP_GUID:
+		case ZFS_PROP_CREATETXG:
+		case ZFS_PROP_NUMCLONES:
+		case ZFS_PROP_INCONSISTENT:
+		case ZFS_PROP_REDACTED:
+		case ZFS_PROP_ORIGIN:
+			break;
+		default:
+			return (B_FALSE);
+		}
+		p = p->pl_next;
+	}
+
+	return (B_TRUE);
 }
 
 static int
@@ -300,8 +348,8 @@ zfs_sort(const void *larg, const void *rarg, void *data)
 
 	for (psc = sc; psc != NULL; psc = psc->sc_next) {
 		char lbuf[ZFS_MAXPROPLEN], rbuf[ZFS_MAXPROPLEN];
-		char *lstr, *rstr;
-		uint64_t lnum, rnum;
+		const char *lstr, *rstr;
+		uint64_t lnum = 0, rnum = 0;
 		boolean_t lvalid, rvalid;
 		int ret = 0;
 
@@ -311,7 +359,7 @@ zfs_sort(const void *larg, const void *rarg, void *data)
 		 * Otherwise, we compare 'lnum' and 'rnum'.
 		 */
 		lstr = rstr = NULL;
-		if (psc->sc_prop == ZPROP_INVAL) {
+		if (psc->sc_prop == ZPROP_USERPROP) {
 			nvlist_t *luser, *ruser;
 			nvlist_t *lval, *rval;
 
@@ -352,11 +400,9 @@ zfs_sort(const void *larg, const void *rarg, void *data)
 			    zfs_get_type(r), B_FALSE);
 
 			if (lvalid)
-				(void) zfs_prop_get_numeric(l, psc->sc_prop,
-				    &lnum, NULL, NULL, 0);
+				lnum = zfs_prop_get_int(l, psc->sc_prop);
 			if (rvalid)
-				(void) zfs_prop_get_numeric(r, psc->sc_prop,
-				    &rnum, NULL, NULL, 0);
+				rnum = zfs_prop_get_int(r, psc->sc_prop);
 		}
 
 		if (!lvalid && !rvalid)

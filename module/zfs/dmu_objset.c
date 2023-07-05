@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -32,6 +32,7 @@
  * Copyright (c) 2018, loli10K <ezomori.nozomu@gmail.com>. All rights reserved.
  * Copyright (c) 2019, Klara Inc.
  * Copyright (c) 2019, Allan Jude
+ * Copyright (c) 2022 Hewlett Packard Enterprise Development LP.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -287,7 +288,9 @@ redundant_metadata_changed_cb(void *arg, uint64_t newval)
 	 * Inheritance and range checking should have been done by now.
 	 */
 	ASSERT(newval == ZFS_REDUNDANT_METADATA_ALL ||
-	    newval == ZFS_REDUNDANT_METADATA_MOST);
+	    newval == ZFS_REDUNDANT_METADATA_MOST ||
+	    newval == ZFS_REDUNDANT_METADATA_SOME ||
+	    newval == ZFS_REDUNDANT_METADATA_NONE);
 
 	os->os_redundant_metadata = newval;
 }
@@ -416,28 +419,28 @@ dnode_multilist_index_func(multilist_t *ml, void *obj)
 static inline boolean_t
 dmu_os_is_l2cacheable(objset_t *os)
 {
-	vdev_t *vd = NULL;
-	zfs_cache_type_t cache = os->os_secondary_cache;
-	blkptr_t *bp = os->os_rootbp;
+	if (os->os_secondary_cache == ZFS_CACHE_ALL ||
+	    os->os_secondary_cache == ZFS_CACHE_METADATA) {
+		if (l2arc_exclude_special == 0)
+			return (B_TRUE);
 
-	if (bp != NULL && !BP_IS_HOLE(bp)) {
+		blkptr_t *bp = os->os_rootbp;
+		if (bp == NULL || BP_IS_HOLE(bp))
+			return (B_FALSE);
 		uint64_t vdev = DVA_GET_VDEV(bp->blk_dva);
 		vdev_t *rvd = os->os_spa->spa_root_vdev;
+		vdev_t *vd = NULL;
 
 		if (vdev < rvd->vdev_children)
 			vd = rvd->vdev_child[vdev];
 
-		if (cache == ZFS_CACHE_ALL || cache == ZFS_CACHE_METADATA) {
-			if (vd == NULL)
-				return (B_TRUE);
+		if (vd == NULL)
+			return (B_TRUE);
 
-			if ((vd->vdev_alloc_bias != VDEV_BIAS_SPECIAL &&
-			    vd->vdev_alloc_bias != VDEV_BIAS_DEDUP) ||
-			    l2arc_exclude_special == 0)
-				return (B_TRUE);
-		}
+		if (vd->vdev_alloc_bias != VDEV_BIAS_SPECIAL &&
+		    vd->vdev_alloc_bias != VDEV_BIAS_DEDUP)
+			return (B_TRUE);
 	}
-
 	return (B_FALSE);
 }
 
@@ -479,7 +482,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 		arc_flags_t aflags = ARC_FLAG_WAIT;
 		zbookmark_phys_t zb;
 		int size;
-		enum zio_flag zio_flags = ZIO_FLAG_CANFAIL;
+		zio_flag_t zio_flags = ZIO_FLAG_CANFAIL;
 		SET_BOOKMARK(&zb, ds ? ds->ds_object : DMU_META_OBJSET,
 		    ZB_ROOT_OBJECT, ZB_ROOT_LEVEL, ZB_ROOT_BLKID);
 
@@ -714,7 +717,7 @@ dmu_objset_from_ds(dsl_dataset_t *ds, objset_t **osp)
  * can be held at a time.
  */
 int
-dmu_objset_hold_flags(const char *name, boolean_t decrypt, void *tag,
+dmu_objset_hold_flags(const char *name, boolean_t decrypt, const void *tag,
     objset_t **osp)
 {
 	dsl_pool_t *dp;
@@ -742,14 +745,14 @@ dmu_objset_hold_flags(const char *name, boolean_t decrypt, void *tag,
 }
 
 int
-dmu_objset_hold(const char *name, void *tag, objset_t **osp)
+dmu_objset_hold(const char *name, const void *tag, objset_t **osp)
 {
 	return (dmu_objset_hold_flags(name, B_FALSE, tag, osp));
 }
 
 static int
 dmu_objset_own_impl(dsl_dataset_t *ds, dmu_objset_type_t type,
-    boolean_t readonly, boolean_t decrypt, void *tag, objset_t **osp)
+    boolean_t readonly, boolean_t decrypt, const void *tag, objset_t **osp)
 {
 	(void) tag;
 
@@ -789,7 +792,7 @@ dmu_objset_own_impl(dsl_dataset_t *ds, dmu_objset_type_t type,
  */
 int
 dmu_objset_own(const char *name, dmu_objset_type_t type,
-    boolean_t readonly, boolean_t decrypt, void *tag, objset_t **osp)
+    boolean_t readonly, boolean_t decrypt, const void *tag, objset_t **osp)
 {
 	dsl_pool_t *dp;
 	dsl_dataset_t *ds;
@@ -834,7 +837,7 @@ dmu_objset_own(const char *name, dmu_objset_type_t type,
 
 int
 dmu_objset_own_obj(dsl_pool_t *dp, uint64_t obj, dmu_objset_type_t type,
-    boolean_t readonly, boolean_t decrypt, void *tag, objset_t **osp)
+    boolean_t readonly, boolean_t decrypt, const void *tag, objset_t **osp)
 {
 	dsl_dataset_t *ds;
 	int err;
@@ -855,7 +858,7 @@ dmu_objset_own_obj(dsl_pool_t *dp, uint64_t obj, dmu_objset_type_t type,
 }
 
 void
-dmu_objset_rele_flags(objset_t *os, boolean_t decrypt, void *tag)
+dmu_objset_rele_flags(objset_t *os, boolean_t decrypt, const void *tag)
 {
 	ds_hold_flags_t flags;
 	dsl_pool_t *dp = dmu_objset_pool(os);
@@ -866,7 +869,7 @@ dmu_objset_rele_flags(objset_t *os, boolean_t decrypt, void *tag)
 }
 
 void
-dmu_objset_rele(objset_t *os, void *tag)
+dmu_objset_rele(objset_t *os, const void *tag)
 {
 	dmu_objset_rele_flags(os, B_FALSE, tag);
 }
@@ -884,7 +887,7 @@ dmu_objset_rele(objset_t *os, void *tag)
  */
 void
 dmu_objset_refresh_ownership(dsl_dataset_t *ds, dsl_dataset_t **newds,
-    boolean_t decrypt, void *tag)
+    boolean_t decrypt, const void *tag)
 {
 	dsl_pool_t *dp;
 	char name[ZFS_MAX_DATASET_NAME_LEN];
@@ -904,7 +907,7 @@ dmu_objset_refresh_ownership(dsl_dataset_t *ds, dsl_dataset_t **newds,
 }
 
 void
-dmu_objset_disown(objset_t *os, boolean_t decrypt, void *tag)
+dmu_objset_disown(objset_t *os, boolean_t decrypt, const void *tag)
 {
 	ds_hold_flags_t flags;
 
@@ -1118,12 +1121,14 @@ dmu_objset_create_impl_dnstats(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 	    (!os->os_encrypted || !dmu_objset_is_receiving(os))) {
 		os->os_phys->os_flags |= OBJSET_FLAG_USERACCOUNTING_COMPLETE;
 		if (dmu_objset_userobjused_enabled(os)) {
+			ASSERT3P(ds, !=, NULL);
 			ds->ds_feature_activation[
 			    SPA_FEATURE_USEROBJ_ACCOUNTING] = (void *)B_TRUE;
 			os->os_phys->os_flags |=
 			    OBJSET_FLAG_USEROBJACCOUNTING_COMPLETE;
 		}
 		if (dmu_objset_projectquota_enabled(os)) {
+			ASSERT3P(ds, !=, NULL);
 			ds->ds_feature_activation[
 			    SPA_FEATURE_PROJECT_QUOTA] = (void *)B_TRUE;
 			os->os_phys->os_flags |=
@@ -1298,6 +1303,7 @@ dmu_objset_create_sync(void *arg, dmu_tx_t *tx)
 			ASSERT3P(ds->ds_key_mapping, !=, NULL);
 			key_mapping_rele(spa, ds->ds_key_mapping, ds);
 			dsl_dataset_sync_done(ds, tx);
+			dmu_buf_rele(ds->ds_dbuf, ds);
 		}
 
 		mutex_enter(&ds->ds_lock);
@@ -1691,8 +1697,8 @@ dmu_objset_sync(objset_t *os, zio_t *pio, dmu_tx_t *tx)
 	}
 
 	zio = arc_write(pio, os->os_spa, tx->tx_txg,
-	    blkptr_copy, os->os_phys_buf, dmu_os_is_l2cacheable(os),
-	    &zp, dmu_objset_write_ready, NULL, NULL, dmu_objset_write_done,
+	    blkptr_copy, os->os_phys_buf, B_FALSE, dmu_os_is_l2cacheable(os),
+	    &zp, dmu_objset_write_ready, NULL, dmu_objset_write_done,
 	    os, ZIO_PRIORITY_ASYNC_WRITE, ZIO_FLAG_MUSTSUCCEED, &zb);
 
 	/*
@@ -1749,9 +1755,8 @@ dmu_objset_sync(objset_t *os, zio_t *pio, dmu_tx_t *tx)
 	taskq_wait(dmu_objset_pool(os)->dp_sync_taskq);
 
 	list = &DMU_META_DNODE(os)->dn_dirty_records[txgoff];
-	while ((dr = list_head(list)) != NULL) {
+	while ((dr = list_remove_head(list)) != NULL) {
 		ASSERT0(dr->dr_dbuf->db_level);
-		list_remove(list, dr);
 		zio_nowait(dr->dr_zio);
 	}
 

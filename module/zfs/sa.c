@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -141,7 +141,7 @@ static int sa_modify_attrs(sa_handle_t *hdl, sa_attr_type_t newattr,
     sa_data_op_t action, sa_data_locator_t *locator, void *datastart,
     uint16_t buflen, dmu_tx_t *tx);
 
-static const arc_byteswap_func_t sa_bswap_table[] = {
+static arc_byteswap_func_t sa_bswap_table[] = {
 	byteswap_uint64_array,
 	byteswap_uint32_array,
 	byteswap_uint16_array,
@@ -1068,8 +1068,8 @@ sa_setup(objset_t *os, uint64_t sa_obj, const sa_attr_reg_t *reg_attrs,
 				    za.za_num_integers);
 				break;
 			}
-			VERIFY(ddi_strtoull(za.za_name, NULL, 10,
-			    (unsigned long long *)&lot_num) == 0);
+			VERIFY0(ddi_strtoull(za.za_name, NULL, 10,
+			    (unsigned long long *)&lot_num));
 
 			(void) sa_add_layout_entry(os, lot_attrs,
 			    za.za_num_integers, lot_num,
@@ -1201,6 +1201,7 @@ sa_attr_iter(objset_t *os, sa_hdr_phys_t *hdr, dmu_object_type_t type,
 		uint8_t idx_len;
 
 		reg_length = sa->sa_attr_table[tb->lot_attrs[i]].sa_length;
+		IMPLY(reg_length == 0, IS_SA_BONUSTYPE(type));
 		if (reg_length) {
 			attr_length = reg_length;
 			idx_len = 0;
@@ -1449,13 +1450,13 @@ sa_handle_get(objset_t *objset, uint64_t objid, void *userp,
 }
 
 int
-sa_buf_hold(objset_t *objset, uint64_t obj_num, void *tag, dmu_buf_t **db)
+sa_buf_hold(objset_t *objset, uint64_t obj_num, const void *tag, dmu_buf_t **db)
 {
 	return (dmu_bonus_hold(objset, obj_num, tag, db));
 }
 
 void
-sa_buf_rele(dmu_buf_t *db, void *tag)
+sa_buf_rele(dmu_buf_t *db, const void *tag)
 {
 	dmu_buf_rele(db, tag);
 }
@@ -1917,7 +1918,7 @@ sa_modify_attrs(sa_handle_t *hdl, sa_attr_type_t newattr,
 	count = bonus_attr_count;
 	hdr = SA_GET_HDR(hdl, SA_BONUS);
 	idx_tab = SA_IDX_TAB_GET(hdl, SA_BONUS);
-	for (; k != 2; k++) {
+	for (; ; k++) {
 		/*
 		 * Iterate over each attribute in layout.  Fetch the
 		 * size of variable-length attributes needing rewrite

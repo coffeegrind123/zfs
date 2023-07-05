@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -402,10 +402,10 @@ fnvlist_lookup_uint64(const nvlist_t *nvl, const char *name)
 	return (rv);
 }
 
-char *
-fnvlist_lookup_string(nvlist_t *nvl, const char *name)
+const char *
+fnvlist_lookup_string(const nvlist_t *nvl, const char *name)
 {
-	char *rv;
+	const char *rv;
 	VERIFY0(nvlist_lookup_string(nvl, name, &rv));
 	return (rv);
 }
@@ -577,10 +577,10 @@ fnvpair_value_uint64(const nvpair_t *nvp)
 	return (rv);
 }
 
-char *
-fnvpair_value_string(nvpair_t *nvp)
+const char *
+fnvpair_value_string(const nvpair_t *nvp)
 {
-	char *rv;
+	const char *rv;
 	VERIFY0(nvpair_value_string(nvp, &rv));
 	return (rv);
 }

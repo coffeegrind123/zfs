@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -165,10 +165,10 @@ zio_checksum_info_t zio_checksum_table[ZIO_CHECKSUM_FUNCTIONS] = {
 	{{NULL, NULL}, NULL, NULL, 0, "on"},
 	{{abd_checksum_off,		abd_checksum_off},
 	    NULL, NULL, 0, "off"},
-	{{abd_checksum_SHA256,		abd_checksum_SHA256},
+	{{abd_checksum_sha256,		abd_checksum_sha256},
 	    NULL, NULL, ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_EMBEDDED,
 	    "label"},
-	{{abd_checksum_SHA256,		abd_checksum_SHA256},
+	{{abd_checksum_sha256,		abd_checksum_sha256},
 	    NULL, NULL, ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_EMBEDDED,
 	    "gang_header"},
 	{{abd_fletcher_2_native,	abd_fletcher_2_byteswap},
@@ -177,14 +177,14 @@ zio_checksum_info_t zio_checksum_table[ZIO_CHECKSUM_FUNCTIONS] = {
 	    NULL, NULL, 0, "fletcher2"},
 	{{abd_fletcher_4_native,	abd_fletcher_4_byteswap},
 	    NULL, NULL, ZCHECKSUM_FLAG_METADATA, "fletcher4"},
-	{{abd_checksum_SHA256,		abd_checksum_SHA256},
+	{{abd_checksum_sha256,		abd_checksum_sha256},
 	    NULL, NULL, ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_DEDUP |
 	    ZCHECKSUM_FLAG_NOPWRITE, "sha256"},
 	{{abd_fletcher_4_native,	abd_fletcher_4_byteswap},
 	    NULL, NULL, ZCHECKSUM_FLAG_EMBEDDED, "zilog2"},
 	{{abd_checksum_off,		abd_checksum_off},
 	    NULL, NULL, 0, "noparity"},
-	{{abd_checksum_SHA512_native,	abd_checksum_SHA512_byteswap},
+	{{abd_checksum_sha512_native,	abd_checksum_sha512_byteswap},
 	    NULL, NULL, ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_DEDUP |
 	    ZCHECKSUM_FLAG_NOPWRITE, "sha512"},
 	{{abd_checksum_skein_native,	abd_checksum_skein_byteswap},
@@ -195,6 +195,10 @@ zio_checksum_info_t zio_checksum_table[ZIO_CHECKSUM_FUNCTIONS] = {
 	    abd_checksum_edonr_tmpl_init, abd_checksum_edonr_tmpl_free,
 	    ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_SALTED |
 	    ZCHECKSUM_FLAG_NOPWRITE, "edonr"},
+	{{abd_checksum_blake3_native,	abd_checksum_blake3_byteswap},
+	    abd_checksum_blake3_tmpl_init, abd_checksum_blake3_tmpl_free,
+	    ZCHECKSUM_FLAG_METADATA | ZCHECKSUM_FLAG_DEDUP |
+	    ZCHECKSUM_FLAG_SALTED | ZCHECKSUM_FLAG_NOPWRITE, "blake3"},
 };
 
 /*
@@ -207,6 +211,8 @@ zio_checksum_to_feature(enum zio_checksum cksum)
 	VERIFY((cksum & ~ZIO_CHECKSUM_MASK) == 0);
 
 	switch (cksum) {
+	case ZIO_CHECKSUM_BLAKE3:
+		return (SPA_FEATURE_BLAKE3);
 	case ZIO_CHECKSUM_SHA512:
 		return (SPA_FEATURE_SHA512);
 	case ZIO_CHECKSUM_SKEIN:
@@ -416,6 +422,9 @@ zio_checksum_error_impl(spa_t *spa, const blkptr_t *bp,
 		return (SET_ERROR(EINVAL));
 
 	zio_checksum_template_init(checksum, spa);
+
+	IMPLY(bp == NULL, ci->ci_flags & ZCHECKSUM_FLAG_EMBEDDED);
+	IMPLY(bp == NULL, checksum == ZIO_CHECKSUM_LABEL);
 
 	if (ci->ci_flags & ZCHECKSUM_FLAG_EMBEDDED) {
 		zio_cksum_t verifier;

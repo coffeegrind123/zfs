@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -57,18 +57,17 @@ extern "C" {
  * Forward declarations that lots of things need.
  */
 typedef struct vdev_queue vdev_queue_t;
-typedef struct vdev_cache vdev_cache_t;
-typedef struct vdev_cache_entry vdev_cache_entry_t;
 struct abd;
 
-extern int zfs_vdev_queue_depth_pct;
-extern int zfs_vdev_def_queue_depth;
-extern uint32_t zfs_vdev_async_write_max_active;
+extern uint_t zfs_vdev_queue_depth_pct;
+extern uint_t zfs_vdev_def_queue_depth;
+extern uint_t zfs_vdev_async_write_max_active;
 
 /*
  * Virtual device operations
  */
 typedef int	vdev_init_func_t(spa_t *spa, nvlist_t *nv, void **tsd);
+typedef void	vdev_kobj_post_evt_func_t(vdev_t *vd);
 typedef void	vdev_fini_func_t(vdev_t *vd);
 typedef int	vdev_open_func_t(vdev_t *vd, uint64_t *size, uint64_t *max_size,
     uint64_t *ashift, uint64_t *pshift);
@@ -123,6 +122,7 @@ typedef const struct vdev_ops {
 	vdev_config_generate_func_t	*vdev_op_config_generate;
 	vdev_nparity_func_t		*vdev_op_nparity;
 	vdev_ndisks_func_t		*vdev_op_ndisks;
+	vdev_kobj_post_evt_func_t	*vdev_op_kobj_evt_post;
 	char				vdev_op_type[16];
 	boolean_t			vdev_op_leaf;
 } vdev_ops_t;
@@ -130,44 +130,24 @@ typedef const struct vdev_ops {
 /*
  * Virtual device properties
  */
-struct vdev_cache_entry {
-	struct abd	*ve_abd;
-	uint64_t	ve_offset;
-	clock_t		ve_lastused;
-	avl_node_t	ve_offset_node;
-	avl_node_t	ve_lastused_node;
-	uint32_t	ve_hits;
-	uint16_t	ve_missed_update;
-	zio_t		*ve_fill_io;
-};
-
-struct vdev_cache {
-	avl_tree_t	vc_offset_tree;
-	avl_tree_t	vc_lastused_tree;
-	kmutex_t	vc_lock;
-};
-
-typedef struct vdev_queue_class {
-	uint32_t	vqc_active;
-
-	/*
-	 * Sorted by offset or timestamp, depending on if the queue is
-	 * LBA-ordered vs FIFO.
-	 */
-	avl_tree_t	vqc_queued_tree;
+typedef union vdev_queue_class {
+	list_t		vqc_list;
+	avl_tree_t	vqc_tree;
 } vdev_queue_class_t;
 
 struct vdev_queue {
 	vdev_t		*vq_vdev;
 	vdev_queue_class_t vq_class[ZIO_PRIORITY_NUM_QUEUEABLE];
-	avl_tree_t	vq_active_tree;
 	avl_tree_t	vq_read_offset_tree;
 	avl_tree_t	vq_write_offset_tree;
-	avl_tree_t	vq_trim_offset_tree;
 	uint64_t	vq_last_offset;
 	zio_priority_t	vq_last_prio;	/* Last sent I/O priority. */
+	uint32_t	vq_cqueued;	/* Classes with queued I/Os. */
+	uint32_t	vq_cactive[ZIO_PRIORITY_NUM_QUEUEABLE];
+	uint32_t	vq_active;	/* Number of active I/Os. */
 	uint32_t	vq_ia_active;	/* Active interactive I/Os. */
 	uint32_t	vq_nia_credit;	/* Non-interactive I/Os credit. */
+	list_t		vq_active_list;	/* List of active I/Os. */
 	hrtime_t	vq_io_complete_ts; /* time last i/o completed */
 	hrtime_t	vq_io_delta_ts;
 	zio_t		vq_io_search; /* used as local for stack reduction */
@@ -275,6 +255,7 @@ struct vdev {
 	kthread_t	*vdev_open_thread; /* thread opening children	*/
 	kthread_t	*vdev_validate_thread; /* thread validating children */
 	uint64_t	vdev_crtxg;	/* txg when top-level was added */
+	uint64_t	vdev_root_zap;
 
 	/*
 	 * Top-level vdev state.
@@ -297,6 +278,7 @@ struct vdev {
 	uint64_t	vdev_islog;	/* is an intent log device	*/
 	uint64_t	vdev_noalloc;	/* device is passivated?	*/
 	uint64_t	vdev_removing;	/* device is being removed?	*/
+	uint64_t	vdev_failfast;	/* device failfast setting	*/
 	boolean_t	vdev_ishole;	/* is a hole in the namespace	*/
 	uint64_t	vdev_top_zap;
 	vdev_alloc_bias_t vdev_alloc_bias; /* metaslab allocation bias	*/
@@ -326,6 +308,7 @@ struct vdev {
 	list_node_t	vdev_trim_node;
 	kmutex_t	vdev_autotrim_lock;
 	kcondvar_t	vdev_autotrim_cv;
+	kcondvar_t	vdev_autotrim_kick_cv;
 	kthread_t	*vdev_autotrim_thread;
 	/* Protects vdev_trim_thread and vdev_trim_state. */
 	kmutex_t	vdev_trim_lock;
@@ -436,8 +419,8 @@ struct vdev {
 	boolean_t	vdev_isl2cache;	/* was a l2cache device		*/
 	boolean_t	vdev_copy_uberblocks;  /* post expand copy uberblocks */
 	boolean_t	vdev_resilver_deferred;  /* resilver deferred */
+	boolean_t	vdev_kobj_flag; /* kobj event record */
 	vdev_queue_t	vdev_queue;	/* I/O deadline schedule queue	*/
-	vdev_cache_t	vdev_cache;	/* physical block cache		*/
 	spa_aux_vdev_t	*vdev_aux;	/* for l2cache and spares vdevs	*/
 	zio_t		*vdev_probe_zio; /* root of current probe	*/
 	vdev_aux_t	vdev_label_aux;	/* on-disk aux state		*/
@@ -465,6 +448,14 @@ struct vdev {
 	zfs_ratelimit_t vdev_delay_rl;
 	zfs_ratelimit_t vdev_deadman_rl;
 	zfs_ratelimit_t vdev_checksum_rl;
+
+	/*
+	 * Checksum and IO thresholds for tuning ZED
+	 */
+	uint64_t	vdev_checksum_n;
+	uint64_t	vdev_checksum_t;
+	uint64_t	vdev_io_n;
+	uint64_t	vdev_io_t;
 };
 
 #define	VDEV_PAD_SIZE		(8 << 10)
@@ -641,12 +632,13 @@ extern int vdev_obsolete_counts_are_precise(vdev_t *vd, boolean_t *are_precise);
  */
 int vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj);
 void vdev_metaslab_group_create(vdev_t *vd);
+uint64_t vdev_best_ashift(uint64_t logical, uint64_t a, uint64_t b);
 
 /*
  * Vdev ashift optimization tunables
  */
-extern uint64_t zfs_vdev_min_auto_ashift;
-extern uint64_t zfs_vdev_max_auto_ashift;
+extern uint_t zfs_vdev_min_auto_ashift;
+extern uint_t zfs_vdev_max_auto_ashift;
 int param_set_min_auto_ashift(ZFS_MODULE_PARAM_ARGS);
 int param_set_max_auto_ashift(ZFS_MODULE_PARAM_ARGS);
 

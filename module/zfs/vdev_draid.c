@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -541,7 +541,7 @@ vdev_draid_generate_perms(const draid_map_t *map, uint8_t **permsp)
 int
 vdev_draid_lookup_map(uint64_t children, const draid_map_t **mapp)
 {
-	for (int i = 0; i <= VDEV_DRAID_MAX_MAPS; i++) {
+	for (int i = 0; i < VDEV_DRAID_MAX_MAPS; i++) {
 		if (draid_maps[i].dm_children == children) {
 			*mapp = &draid_maps[i];
 			return (0);
@@ -1023,6 +1023,8 @@ vdev_draid_map_alloc_row(zio_t *zio, raidz_row_t **rrp, uint64_t io_offset,
 	/* The total number of data and parity sectors for this I/O. */
 	uint64_t tot = psize + (vdc->vdc_nparity * (q + (r == 0 ? 0 : 1)));
 
+	ASSERT3U(vdc->vdc_nparity, >, 0);
+
 	raidz_row_t *rr;
 	rr = kmem_alloc(offsetof(raidz_row_t, rr_col[groupwidth]), KM_SLEEP);
 	rr->rr_cols = groupwidth;
@@ -1496,8 +1498,14 @@ vdev_draid_calculate_asize(vdev_t *vd, uint64_t *asizep, uint64_t *max_asizep,
 		asize = MIN(asize - 1, cvd->vdev_asize - 1) + 1;
 		max_asize = MIN(max_asize - 1, cvd->vdev_max_asize - 1) + 1;
 		logical_ashift = MAX(logical_ashift, cvd->vdev_ashift);
-		physical_ashift = MAX(physical_ashift,
-		    cvd->vdev_physical_ashift);
+	}
+	for (int c = 0; c < vd->vdev_children; c++) {
+		vdev_t *cvd = vd->vdev_child[c];
+
+		if (cvd->vdev_ops == &vdev_draid_spare_ops)
+			continue;
+		physical_ashift = vdev_best_ashift(logical_ashift,
+		    physical_ashift, cvd->vdev_physical_ashift);
 	}
 
 	*asizep = asize;
@@ -2712,7 +2720,7 @@ vdev_draid_spare_lookup(spa_t *spa, nvlist_t *nv, uint64_t *top_guidp,
 		return (SET_ERROR(ENOENT));
 	}
 
-	char *spare_name;
+	const char *spare_name;
 	error = nvlist_lookup_string(nv, ZPOOL_CONFIG_PATH, &spare_name);
 	if (error != 0)
 		return (SET_ERROR(EINVAL));
@@ -2720,7 +2728,7 @@ vdev_draid_spare_lookup(spa_t *spa, nvlist_t *nv, uint64_t *top_guidp,
 	for (int i = 0; i < nspares; i++) {
 		nvlist_t *spare = spares[i];
 		uint64_t top_guid, spare_id;
-		char *type, *path;
+		const char *type, *path;
 
 		/* Skip non-distributed spares */
 		error = nvlist_lookup_string(spare, ZPOOL_CONFIG_TYPE, &type);

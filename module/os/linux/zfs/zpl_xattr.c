@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -83,6 +83,7 @@
 #include <sys/zap.h>
 #include <sys/vfs.h>
 #include <sys/zpl.h>
+#include <linux/vfs_compat.h>
 
 enum xattr_permission {
 	XAPERM_DENY,
@@ -245,8 +246,8 @@ zpl_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	ZPL_ENTER(zfsvfs);
-	ZPL_VERIFY_ZP(zp);
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out1;
 	rw_enter(&zp->z_xattr_lock, RW_READER);
 
 	if (zfsvfs->z_use_sa && zp->z_is_sa) {
@@ -263,7 +264,8 @@ zpl_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 out:
 
 	rw_exit(&zp->z_xattr_lock);
-	ZPL_EXIT(zfsvfs);
+	zpl_exit(zfsvfs, FTAG);
+out1:
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 
@@ -434,12 +436,13 @@ zpl_xattr_get(struct inode *ip, const char *name, void *value, size_t size)
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	ZPL_ENTER(zfsvfs);
-	ZPL_VERIFY_ZP(zp);
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out;
 	rw_enter(&zp->z_xattr_lock, RW_READER);
 	error = __zpl_xattr_get(ip, name, value, size, cr);
 	rw_exit(&zp->z_xattr_lock);
-	ZPL_EXIT(zfsvfs);
+	zpl_exit(zfsvfs, FTAG);
+out:
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 
@@ -496,7 +499,7 @@ zpl_xattr_set_dir(struct inode *ip, const char *name, const void *value,
 		vap->va_gid = crgetgid(cr);
 
 		error = -zfs_create(dxzp, (char *)name, vap, 0, 0644, &xzp,
-		    cr, 0, NULL);
+		    cr, ATTR_NOACLCHECK, NULL, zfs_init_idmap);
 		if (error)
 			goto out;
 	}
@@ -603,8 +606,8 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	ZPL_ENTER(zfsvfs);
-	ZPL_VERIFY_ZP(zp);
+	if ((error = zpl_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		goto out1;
 	rw_enter(&zp->z_xattr_lock, RW_WRITER);
 
 	/*
@@ -657,7 +660,8 @@ zpl_xattr_set(struct inode *ip, const char *name, const void *value,
 		zpl_xattr_set_sa(ip, name, NULL, 0, 0, cr);
 out:
 	rw_exit(&zp->z_xattr_lock);
-	ZPL_EXIT(zfsvfs);
+	zpl_exit(zfsvfs, FTAG);
+out1:
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 	ASSERT3S(error, <=, 0);
@@ -734,9 +738,11 @@ __zpl_xattr_user_get(struct inode *ip, const char *name,
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_user_get);
 
 static int
-__zpl_xattr_user_set(struct inode *ip, const char *name,
+__zpl_xattr_user_set(zidmap_t *user_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
+	(void) user_ns;
 	int error = 0;
 	/* xattr_resolve_name will do this for us if this is defined */
 #ifndef HAVE_XATTR_HANDLER_NAME
@@ -842,9 +848,11 @@ __zpl_xattr_trusted_get(struct inode *ip, const char *name,
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_trusted_get);
 
 static int
-__zpl_xattr_trusted_set(struct inode *ip, const char *name,
+__zpl_xattr_trusted_set(zidmap_t *user_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
+	(void) user_ns;
 	char *xattr_name;
 	int error;
 
@@ -910,9 +918,11 @@ __zpl_xattr_security_get(struct inode *ip, const char *name,
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_security_get);
 
 static int
-__zpl_xattr_security_set(struct inode *ip, const char *name,
+__zpl_xattr_security_set(zidmap_t *user_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
+	(void) user_ns;
 	char *xattr_name;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
@@ -936,7 +946,7 @@ zpl_xattr_security_init_impl(struct inode *ip, const struct xattr *xattrs,
 	int error = 0;
 
 	for (xattr = xattrs; xattr->name != NULL; xattr++) {
-		error = __zpl_xattr_security_set(ip,
+		error = __zpl_xattr_security_set(NULL, ip,
 		    xattr->name, xattr->value, xattr->value_len, 0);
 
 		if (error < 0)
@@ -1000,7 +1010,7 @@ zpl_set_acl_impl(struct inode *ip, struct posix_acl *acl, int type)
 				 * the inode to write the Posix mode bits.
 				 */
 				if (ip->i_mode != mode) {
-					ip->i_mode = mode;
+					ip->i_mode = ITOZ(ip)->z_mode = mode;
 					ip->i_ctime = current_time(ip);
 					zfs_mark_inode_dirty(ip);
 				}
@@ -1051,11 +1061,23 @@ int
 #ifdef HAVE_SET_ACL_USERNS
 zpl_set_acl(struct user_namespace *userns, struct inode *ip,
     struct posix_acl *acl, int type)
+#elif defined(HAVE_SET_ACL_IDMAP_DENTRY)
+zpl_set_acl(struct mnt_idmap *userns, struct dentry *dentry,
+    struct posix_acl *acl, int type)
+#elif defined(HAVE_SET_ACL_USERNS_DENTRY_ARG2)
+zpl_set_acl(struct user_namespace *userns, struct dentry *dentry,
+    struct posix_acl *acl, int type)
 #else
 zpl_set_acl(struct inode *ip, struct posix_acl *acl, int type)
 #endif /* HAVE_SET_ACL_USERNS */
 {
+#ifdef HAVE_SET_ACL_USERNS_DENTRY_ARG2
+	return (zpl_set_acl_impl(d_inode(dentry), acl, type));
+#elif defined(HAVE_SET_ACL_IDMAP_DENTRY)
+	return (zpl_set_acl_impl(d_inode(dentry), acl, type));
+#else
 	return (zpl_set_acl_impl(ip, acl, type));
+#endif /* HAVE_SET_ACL_USERNS_DENTRY_ARG2 */
 }
 #endif /* HAVE_SET_ACL */
 
@@ -1114,7 +1136,7 @@ zpl_get_acl_impl(struct inode *ip, int type)
 	return (acl);
 }
 
-#if defined(HAVE_GET_ACL_RCU)
+#if defined(HAVE_GET_ACL_RCU) || defined(HAVE_GET_INODE_ACL)
 struct posix_acl *
 zpl_get_acl(struct inode *ip, int type, bool rcu)
 {
@@ -1147,7 +1169,7 @@ zpl_init_acl(struct inode *ip, struct inode *dir)
 		if (IS_ERR(acl))
 			return (PTR_ERR(acl));
 		if (!acl) {
-			ip->i_mode &= ~current_umask();
+			ITOZ(ip)->z_mode = (ip->i_mode &= ~current_umask());
 			ip->i_ctime = current_time(ip);
 			zfs_mark_inode_dirty(ip);
 			return (0);
@@ -1166,7 +1188,7 @@ zpl_init_acl(struct inode *ip, struct inode *dir)
 		mode = ip->i_mode;
 		error = __posix_acl_create(&acl, GFP_KERNEL, &mode);
 		if (error >= 0) {
-			ip->i_mode = mode;
+			ip->i_mode = ITOZ(ip)->z_mode = mode;
 			zfs_mark_inode_dirty(ip);
 			if (error > 0) {
 				error = zpl_set_acl_impl(ip, acl,
@@ -1296,7 +1318,8 @@ __zpl_xattr_acl_get_default(struct inode *ip, const char *name,
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_acl_get_default);
 
 static int
-__zpl_xattr_acl_set_access(struct inode *ip, const char *name,
+__zpl_xattr_acl_set_access(zidmap_t *mnt_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
 	struct posix_acl *acl;
@@ -1310,8 +1333,14 @@ __zpl_xattr_acl_set_access(struct inode *ip, const char *name,
 	if (ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_POSIX)
 		return (-EOPNOTSUPP);
 
-	if (!zpl_inode_owner_or_capable(kcred->user_ns, ip))
+#if defined(HAVE_XATTR_SET_USERNS) || defined(HAVE_XATTR_SET_IDMAP)
+	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
 		return (-EPERM);
+#else
+	(void) mnt_ns;
+	if (!zpl_inode_owner_or_capable(zfs_init_idmap, ip))
+		return (-EPERM);
+#endif
 
 	if (value) {
 		acl = zpl_acl_from_xattr(value, size);
@@ -1335,7 +1364,8 @@ __zpl_xattr_acl_set_access(struct inode *ip, const char *name,
 ZPL_XATTR_SET_WRAPPER(zpl_xattr_acl_set_access);
 
 static int
-__zpl_xattr_acl_set_default(struct inode *ip, const char *name,
+__zpl_xattr_acl_set_default(zidmap_t *mnt_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
 	struct posix_acl *acl;
@@ -1349,8 +1379,14 @@ __zpl_xattr_acl_set_default(struct inode *ip, const char *name,
 	if (ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_POSIX)
 		return (-EOPNOTSUPP);
 
-	if (!zpl_inode_owner_or_capable(kcred->user_ns, ip))
+#if defined(HAVE_XATTR_SET_USERNS) || defined(HAVE_XATTR_SET_IDMAP)
+	if (!zpl_inode_owner_or_capable(mnt_ns, ip))
 		return (-EPERM);
+#else
+	(void) mnt_ns;
+	if (!zpl_inode_owner_or_capable(zfs_init_idmap, ip))
+		return (-EPERM);
+#endif
 
 	if (value) {
 		acl = zpl_acl_from_xattr(value, size);
@@ -1495,7 +1531,9 @@ zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
 	return (perm);
 }
 
-#if !defined(HAVE_POSIX_ACL_RELEASE) || defined(HAVE_POSIX_ACL_RELEASE_GPL_ONLY)
+#if defined(CONFIG_FS_POSIX_ACL) && \
+	(!defined(HAVE_POSIX_ACL_RELEASE) || \
+		defined(HAVE_POSIX_ACL_RELEASE_GPL_ONLY))
 struct acl_rel_struct {
 	struct acl_rel_struct *next;
 	struct posix_acl *acl;

@@ -32,14 +32,14 @@
 
 
 static __attribute__((noreturn)) void
-usage(char *progname)
+usage(const char *progname)
 {
 	(void) fprintf(stderr, "Usage: %s <dirname|filename>\n", progname);
 	exit(1);
 }
 
 static __attribute__((noreturn)) void
-fail(char *err)
+fail(const char *err)
 {
 	perror(err);
 	exit(1);
@@ -148,14 +148,10 @@ main(int argc, char *argv[])
 		}
 
 	if (!isdir) {
-		int	fd;
-
-		if ((fd = open(fpath, O_CREAT | O_RDWR, 0600)) < 0)
+		if (open(fpath, O_CREAT | O_RDWR, 0600) < 0)
 			fail("open");
 	} else {
-		DIR	*dp;
-
-		if ((dp = opendir(fpath)) == NULL)
+		if (opendir(fpath) == NULL)
 			fail("opendir");
 	}
 	free(fpath);

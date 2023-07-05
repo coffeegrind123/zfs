@@ -391,7 +391,7 @@ get_special_prop(lua_State *state, dsl_dataset_t *ds, const char *dsname,
 		dsl_dataset_crypt_stats(ds, nvl);
 		if (nvlist_lookup_nvlist(nvl, zfs_prop_to_name(zfs_prop),
 		    &propval) == 0) {
-			char *source;
+			const char *source;
 
 			(void) nvlist_lookup_uint64(propval, ZPROP_VALUE,
 			    &numval);
@@ -402,6 +402,10 @@ get_special_prop(lua_State *state, dsl_dataset_t *ds, const char *dsname,
 		nvlist_free(nvl);
 		break;
 	}
+
+	case ZFS_PROP_SNAPSHOTS_CHANGED:
+		numval = dsl_dir_snap_cmtime(ds->ds_dir).tv_sec;
+		break;
 
 	default:
 		/* Did not match these props, check in the dsl_dir */
@@ -463,11 +467,13 @@ get_zap_prop(lua_State *state, dsl_dataset_t *ds, zfs_prop_t zfs_prop)
 	} else {
 		error = dsl_prop_get_ds(ds, prop_name, sizeof (numval),
 		    1, &numval, setpoint);
-
+		if (error != 0)
+			goto out;
 #ifdef _KERNEL
 		/* Fill in temporary value for prop, if applicable */
 		(void) zfs_get_temporary_prop(ds, zfs_prop, &numval, setpoint);
 #else
+		kmem_free(strval, ZAP_MAXVALUELEN);
 		return (luaL_error(state,
 		    "temporary properties only supported in kernel mode",
 		    prop_name));
@@ -484,6 +490,7 @@ get_zap_prop(lua_State *state, dsl_dataset_t *ds, zfs_prop_t zfs_prop)
 				(void) lua_pushnumber(state, numval);
 		}
 	}
+out:
 	kmem_free(strval, ZAP_MAXVALUELEN);
 	if (error == 0)
 		get_prop_src(state, setpoint, zfs_prop);
@@ -603,8 +610,7 @@ parse_userquota_prop(const char *prop_name, zfs_userquota_prop_t *type,
 		 */
 		int domain_len = strrchr(cp, '-') - cp;
 		domain_val = kmem_alloc(domain_len + 1, KM_SLEEP);
-		(void) strncpy(domain_val, cp, domain_len);
-		domain_val[domain_len] = '\0';
+		(void) strlcpy(domain_val, cp, domain_len + 1);
 		cp += domain_len + 1;
 
 		(void) ddi_strtoll(cp, &end, 10, (longlong_t *)rid);

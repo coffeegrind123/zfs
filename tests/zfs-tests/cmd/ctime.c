@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -51,7 +51,7 @@
 
 typedef struct timetest {
 	int	type;
-	char	*name;
+	const char	*name;
 	int	(*func)(const char *pfile);
 } timetest_t;
 
@@ -260,7 +260,7 @@ static int
 do_xattr(const char *pfile)
 {
 	int ret = 0;
-	char *value = "user.value";
+	const char *value = "user.value";
 
 	if (pfile == NULL) {
 		return (-1);
@@ -306,7 +306,7 @@ int
 main(void)
 {
 	int i, ret, fd;
-	char *penv[] = {"TESTDIR", "TESTFILE0"};
+	const char *penv[] = {"TESTDIR", "TESTFILE0"};
 
 	(void) atexit(cleanup);
 
@@ -327,7 +327,6 @@ main(void)
 	if (access(tfile, F_OK) == 0) {
 		(void) unlink(tfile);
 	}
-	ret = 0;
 	if ((fd = open(tfile, O_WRONLY | O_CREAT | O_TRUNC, ALL_MODE)) == -1) {
 		(void) fprintf(stderr, "open(%s) failed: %d\n", tfile, errno);
 		return (1);

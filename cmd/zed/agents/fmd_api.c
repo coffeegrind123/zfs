@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -359,7 +359,7 @@ static void
 zed_log_fault(nvlist_t *nvl, const char *uuid, const char *code)
 {
 	nvlist_t *rsrc;
-	char *strval;
+	const char *strval;
 	uint64_t guid;
 	uint8_t byte;
 
@@ -372,7 +372,7 @@ zed_log_fault(nvlist_t *nvl, const char *uuid, const char *code)
 	if (code != NULL)
 		zed_log_msg(LOG_INFO, "\t%s: %s", FM_SUSPECT_DIAG_CODE, code);
 	if (nvlist_lookup_uint8(nvl, FM_FAULT_CERTAINTY, &byte) == 0)
-		zed_log_msg(LOG_INFO, "\t%s: %llu", FM_FAULT_CERTAINTY, byte);
+		zed_log_msg(LOG_INFO, "\t%s: %hhu", FM_FAULT_CERTAINTY, byte);
 	if (nvlist_lookup_nvlist(nvl, FM_FAULT_RESOURCE, &rsrc) == 0) {
 		if (nvlist_lookup_string(rsrc, FM_FMRI_SCHEME, &strval) == 0)
 			zed_log_msg(LOG_INFO, "\t%s: %s", FM_FMRI_SCHEME,
@@ -389,7 +389,8 @@ zed_log_fault(nvlist_t *nvl, const char *uuid, const char *code)
 static const char *
 fmd_fault_mkcode(nvlist_t *fault)
 {
-	char *class, *code = "-";
+	const char *class;
+	const char *code = "-";
 
 	/*
 	 * Note: message codes come from: openzfs/usr/src/cmd/fm/dicts/ZFS.po
@@ -615,6 +616,7 @@ fmd_timer_install(fmd_hdl_t *hdl, void *arg, fmd_event_t *ep, hrtime_t delta)
 	sev.sigev_notify_function = _timer_notify;
 	sev.sigev_notify_attributes = NULL;
 	sev.sigev_value.sival_ptr = ftp;
+	sev.sigev_signo = 0;
 
 	timer_create(CLOCK_REALTIME, &sev, &ftp->ft_tid);
 	timer_settime(ftp->ft_tid, 0, &its, NULL);
@@ -706,7 +708,7 @@ int
 fmd_nvl_class_match(fmd_hdl_t *hdl, nvlist_t *nvl, const char *pattern)
 {
 	(void) hdl;
-	char *class;
+	const char *class;
 
 	return (nvl != NULL &&
 	    nvlist_lookup_string(nvl, FM_CLASS, &class) == 0 &&

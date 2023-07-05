@@ -9,7 +9,7 @@
 # with the License.
 #
 # You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
-# or http://www.opensolaris.org/os/licensing.
+# or https://opensource.org/licenses/CDDL-1.0.
 # See the License for the specific language governing permissions
 # and limitations under the License.
 #
@@ -26,13 +26,8 @@
 # Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
 #
 
-BASE_DIR=$(dirname "$0")
-SCRIPT_COMMON=common.sh
-if [ -f "${BASE_DIR}/${SCRIPT_COMMON}" ]; then
-	. "${BASE_DIR}/${SCRIPT_COMMON}"
-else
-	echo "Missing helper script ${SCRIPT_COMMON}" && exit 1
-fi
+SCRIPT_COMMON=${SCRIPT_COMMON:-${0%/*}/common.sh}
+. "${SCRIPT_COMMON}" || exit
 
 PROG=zfs-tests.sh
 VERBOSE="no"
@@ -253,7 +248,7 @@ constrain_path() {
 	SYSTEM_DIRS="$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin $LIBEXEC_DIR"
 
 	if [ "$INTREE" = "yes" ]; then
-		# Constrained path set to ./zfs/bin/
+		# Constrained path set to $(top_builddir)/tests/zfs-tests/bin
 		STF_PATH="$BIN_DIR"
 		STF_PATH_REMOVE="no"
 		STF_MISSING_BIN=""
@@ -263,14 +258,10 @@ constrain_path() {
 		fi
 
 		# Special case links for standard zfs utilities
-		DIRS="$(find "$CMD_DIR" -type d \( ! -name .deps -a \
-		    ! -name .libs \) -print | tr '\n' ' ')"
-		create_links "$DIRS" "$ZFS_FILES"
+		create_links "$CMD_DIR" "$ZFS_FILES"
 
 		# Special case links for zfs test suite utilities
-		DIRS="$(find "$STF_SUITE" -type d \( ! -name .deps -a \
-		    ! -name .libs \) -print | tr '\n' ' ')"
-		create_links "$DIRS" "$ZFSTEST_FILES"
+		create_links "$CMD_DIR/tests/zfs-tests/cmd" "$ZFSTEST_FILES"
 	else
 		# Constrained path set to /var/tmp/constrained_path.*
 		SYSTEMDIR=${SYSTEMDIR:-/var/tmp/constrained_path.XXXXXX}

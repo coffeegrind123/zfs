@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -56,7 +56,7 @@
  * in include/libzfs.h.  Note that there are some status results which go past
  * the end of this table, and hence have no associated message ID.
  */
-static char *zfs_msgid_table[] = {
+static const char *const zfs_msgid_table[] = {
 	"ZFS-8000-14", /* ZPOOL_STATUS_CORRUPT_CACHE */
 	"ZFS-8000-2Q", /* ZPOOL_STATUS_MISSING_DEV_R */
 	"ZFS-8000-3C", /* ZPOOL_STATUS_MISSING_DEV_NR */
@@ -168,7 +168,8 @@ find_vdev_problem(nvlist_t *vdev, int (*func)(vdev_stat_t *, uint_t),
 	 * later.
 	 */
 	if (ignore_replacing == B_TRUE) {
-		char *type = fnvlist_lookup_string(vdev, ZPOOL_CONFIG_TYPE);
+		const char *type = fnvlist_lookup_string(vdev,
+		    ZPOOL_CONFIG_TYPE);
 		if (strcmp(type, VDEV_TYPE_REPLACING) == 0)
 			return (B_FALSE);
 	}
@@ -222,7 +223,6 @@ check_status(nvlist_t *config, boolean_t isimport,
 {
 	pool_scan_stat_t *ps = NULL;
 	uint_t vsc, psc;
-	uint64_t nerr;
 	uint64_t suspended;
 	uint64_t hostid = 0;
 	uint64_t errata = 0;
@@ -392,6 +392,7 @@ check_status(nvlist_t *config, boolean_t isimport,
 	 * Persistent data errors.
 	 */
 	if (!isimport) {
+		uint64_t nerr;
 		if (nvlist_lookup_uint64(config, ZPOOL_CONFIG_ERRCOUNT,
 		    &nerr) == 0 && nerr != 0)
 			return (ZPOOL_STATUS_CORRUPT_DATA);
@@ -495,7 +496,8 @@ check_status(nvlist_t *config, boolean_t isimport,
 }
 
 zpool_status_t
-zpool_get_status(zpool_handle_t *zhp, char **msgid, zpool_errata_t *errata)
+zpool_get_status(zpool_handle_t *zhp, const char **msgid,
+    zpool_errata_t *errata)
 {
 	/*
 	 * pass in the desired feature set, as
@@ -519,7 +521,8 @@ zpool_get_status(zpool_handle_t *zhp, char **msgid, zpool_errata_t *errata)
 }
 
 zpool_status_t
-zpool_import_status(nvlist_t *config, char **msgid, zpool_errata_t *errata)
+zpool_import_status(nvlist_t *config, const char **msgid,
+    zpool_errata_t *errata)
 {
 	zpool_status_t ret = check_status(config, B_TRUE, errata, NULL);
 
